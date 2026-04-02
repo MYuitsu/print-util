@@ -74,6 +74,8 @@ Filename: "{sys}\sc.exe"; Parameters: "delete ""{#ServiceName}"""; Flags: runhid
 [Code]
 // Stop existing service before upgrading
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
 begin
   if CurStep = ssInstall then
   begin
