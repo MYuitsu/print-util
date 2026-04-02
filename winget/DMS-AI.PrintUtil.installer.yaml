@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+
+PackageIdentifier: DMS-AI.PrintUtil
+PackageVersion: 0.1.0
+Platform:
+  - Windows.Desktop
+MinimumOSVersion: 10.0.0.0
+Architecture: x64
+InstallerType: inno
+Scope: machine
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+InstallerSwitches:
+  Silent: /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+  SilentWithProgress: /SILENT /SUPPRESSMSGBOXES /NORESTART
+  Log: /LOG="$TEMP\\print-util-install.log"
+UpgradeBehavior: installer
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/MYuitsu/print-util/releases/download/v0.1.0/print-util-0.1.0-setup.exe
+    InstallerSha256: PLACEHOLDER_SHA256_REPLACE_BEFORE_SUBMIT
+    # Sau khi có Release, chạy lệnh này để lấy hash thật:
+    # $hash = (Get-FileHash print-util-0.1.0-setup.exe -Algorithm SHA256).Hash.ToLower()
+    # Rồi thay PLACEHOLDER bằng giá trị đó
+ManifestType: installer
+ManifestVersion: 1.6.0

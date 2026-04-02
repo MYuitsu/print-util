@@ -1,0 +1,69 @@
+name: Winget Submit
+
+# Triggered automatically after the Release workflow completes,
+# or manually via workflow_dispatch for re-submission.
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to submit (e.g. 0.1.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  submit:
+    name: Submit to winget-pkgs
+    runs-on: windows-latest
+    # Only run when the Release workflow succeeded
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $v = "${{ inputs.version }}"
+          } else {
+            # Parse from the release tag that triggered the Release workflow
+            $v = "${{ github.event.workflow_run.head_branch }}" -replace '^v',''
+          }
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+          echo "tag=v$v"    >> $env:GITHUB_OUTPUT
+
+      - name: Download installer and get SHA256
+        id: sha
+        run: |
+          $version = "${{ steps.ver.outputs.version }}"
+          $tag     = "${{ steps.ver.outputs.tag }}"
+          $owner   = "${{ github.repository_owner }}"
+          $repo    = "${{ github.event.repository.name }}"
+          $url     = "https://github.com/$owner/$repo/releases/download/$tag/print-util-$version-setup.exe"
+
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile setup.exe
+
+          $hash = (Get-FileHash setup.exe -Algorithm SHA256).Hash.ToLower()
+          Write-Host "SHA256: $hash"
+          echo "sha256=$hash"  >> $env:GITHUB_OUTPUT
+          echo "url=$url"      >> $env:GITHUB_OUTPUT
+
+      # winget-releaser auto-generates the manifest and opens a PR on
+      # microsoft/winget-pkgs. Requires a PAT with public_repo scope stored
+      # as secret WINGET_TOKEN (personal GitHub token, NOT GITHUB_TOKEN –
+      # the PR must come from a user account, not the Actions bot).
+      - name: Submit to winget-pkgs
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier:         DMS-AI.PrintUtil
+          version:            ${{ steps.ver.outputs.version }}
+          release-tag:        ${{ steps.ver.outputs.tag }}
+          installers-regex:   print-util-.*-setup\.exe$
+          token:              ${{ secrets.WINGET_TOKEN }}

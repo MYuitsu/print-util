@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+
+PackageIdentifier: DMS-AI.PrintUtil
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: DMS-AI
+PublisherUrl: https://github.com/MYuitsu
+PublisherSupportUrl: https://github.com/MYuitsu/print-util/issues
+PackageName: print-util
+PackageUrl: https://github.com/MYuitsu/print-util
+License: MIT
+LicenseUrl: https://github.com/MYuitsu/print-util/blob/main/LICENSE
+Copyright: Copyright (c) print-util contributors
+ShortDescription: Silent local PDF print server – no dialog, no popup.
+Description: |-
+  print-util is a lightweight local HTTP server that accepts a PDF file via
+  a multipart POST request and sends it silently to the Windows print spooler.
+  No printer-selection dialog, no page-size dialog, no browser window.
+
+  Designed for use with browser extensions or web applications that need
+  to trigger printing programmatically without user interaction.
+Moniker: print-util
+Tags:
+  - pdf
+  - print
+  - silent
+  - local
+  - server
+  - utility
+ReleaseNotesUrl: https://github.com/MYuitsu/print-util/releases/tag/v0.1.0
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
