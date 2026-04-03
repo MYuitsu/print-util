@@ -44,6 +44,19 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
+      # Download and bundle gsdll64.dll (Ghostscript AGPL, bundling allowed for OSS)
+      - name: Bundle Ghostscript DLL
+        run: |
+          $rel  = Invoke-RestMethod "https://api.github.com/repos/ArtifexSoftware/ghostpdl-downloads/releases/latest"
+          $asset = $rel.assets | Where-Object { $_.name -match "w64\.exe$" } | Select-Object -First 1
+          Write-Host "Downloading $($asset.browser_download_url)"
+          Invoke-WebRequest $asset.browser_download_url -OutFile gs-setup.exe
+          Start-Process gs-setup.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          $dll = Get-ChildItem "C:\Program Files\gs" -Recurse -Filter "gsdll64.dll" | Select-Object -First 1
+          New-Item -ItemType Directory -Force installer\vendor | Out-Null
+          Copy-Item $dll.FullName installer\vendor\gsdll64.dll
+          Write-Host "Staged $($dll.FullName)"
+
       - name: Build installer
         run: iscc installer\setup.iss
 

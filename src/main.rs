@@ -11,6 +11,26 @@ use tokio::net::TcpListener;
 use tracing::{error, info};
 use uuid::Uuid;
 
+// ── paper size ──────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug)]
+enum PaperSize {
+    A4,
+    A5,
+}
+
+impl PaperSize {
+    fn gs_name(self) -> &'static str {
+        match self { PaperSize::A4 => "a4", PaperSize::A5 => "a5" }
+    }
+    fn sumatra_name(self) -> &'static str {
+        match self { PaperSize::A4 => "A4",  PaperSize::A5 => "A5" }
+    }
+    fn lp_media(self) -> &'static str {
+        match self { PaperSize::A4 => "a4",  PaperSize::A5 => "a5" }
+    }
+}
+
 // ── unified response type ────────────────────────────────────────────────────
 
 type Resp = (StatusCode, Json<Value>);
@@ -34,21 +54,154 @@ fn internal(msg: impl ToString) -> Resp {
 }
 
 // ── entry point ──────────────────────────────────────────────────────────────
+//
+// Chạy theo 2 mode:
+//   1. Windows Service  – khi được SCM khởi động (không có terminal)
+//   2. Console          – khi chạy thẳng từ terminal (debug / portable)
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-
-    // Port: first CLI arg  →  $PORT env var  →  default 3000
-    let port: u16 = std::env::args()
+fn resolve_port() -> u16 {
+    std::env::args()
         .nth(1)
         .and_then(|s| s.parse().ok())
         .or_else(|| std::env::var("PORT").ok().and_then(|s| s.parse().ok()))
-        .unwrap_or(3000);
+        .unwrap_or(17474)
+}
 
+fn main() -> Result<()> {
+    #[cfg(windows)]
+    {
+        // Nếu process được SCM gọi, nó sẽ không có console → chạy service mode.
+        // Nếu có console (chạy tay) thì chạy thẳng console mode.
+        use windows_service::service_dispatcher;
+        if !is_interactive() {
+            service_dispatcher::start("print-util", ffi_service_main)
+                .context("service_dispatcher::start")?;
+            return Ok(());
+        }
+    }
+    // Console mode
+    run_console()
+}
+
+/// Kiểm tra process có đang chạy tương tác (có console) hay không.
+#[cfg(windows)]
+fn is_interactive() -> bool {
+    use windows::Win32::System::Console::GetConsoleWindow;
+    unsafe { !GetConsoleWindow().is_invalid() }
+}
+
+// ── Windows Service boilerplate ──────────────────────────────────────────────
+
+#[cfg(windows)]
+windows_service::define_windows_service!(ffi_service_main, service_main);
+
+#[cfg(windows)]
+fn service_main(_args: Vec<std::ffi::OsString>) {
+    if let Err(e) = run_service() {
+        eprintln!("service error: {e:#}");
+    }
+}
+
+#[cfg(windows)]
+fn run_service() -> Result<()> {
+    use std::time::Duration;
+    use windows_service::{
+        service::ServiceControl,
+        service_control_handler::{self, ServiceControlHandlerResult},
+    };
+
+    let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
+
+    let event_handler = move |ctrl| match ctrl {
+        ServiceControl::Stop | ServiceControl::Shutdown => {
+            let _ = shutdown_tx.send(());
+            ServiceControlHandlerResult::NoError
+        }
+        ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+        _ => ServiceControlHandlerResult::NotImplemented,
+    };
+
+    let status_handle =
+        service_control_handler::register("print-util", event_handler)
+            .context("register service control handler")?;
+
+    use windows_service::service::{
+        ServiceState, ServiceStatus, ServiceType,
+    };
+
+    // Report: starting
+    status_handle.set_service_status(ServiceStatus {
+        service_type:             ServiceType::OWN_PROCESS,
+        current_state:            ServiceState::StartPending,
+        controls_accepted:        ServiceControlAccept::empty(),
+        exit_code:                windows_service::service::ServiceExitCode::Win32(0),
+        checkpoint:               0,
+        wait_hint:                Duration::from_secs(5),
+        process_id:               None,
+    })?;
+
+    // Start the async runtime in a background thread
+    let port = resolve_port();
+    let rt = tokio::runtime::Runtime::new().context("tokio runtime")?;
+    let _guard = rt.enter();
+
+    let server_handle = rt.spawn(async move {
+        if let Err(e) = run_server(port).await {
+            error!("server error: {e:#}");
+        }
+    });
+
+    // Report: running
+    use windows_service::service::ServiceControlAccept;
+    status_handle.set_service_status(ServiceStatus {
+        service_type:      ServiceType::OWN_PROCESS,
+        current_state:     ServiceState::Running,
+        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+        exit_code:         windows_service::service::ServiceExitCode::Win32(0),
+        checkpoint:        0,
+        wait_hint:         Duration::ZERO,
+        process_id:        None,
+    })?;
+
+    info!("print-util service running on port {port}");
+
+    // Block until SCM sends Stop/Shutdown
+    let _ = shutdown_rx.recv();
+    server_handle.abort();
+
+    // Report: stopped
+    status_handle.set_service_status(ServiceStatus {
+        service_type:      ServiceType::OWN_PROCESS,
+        current_state:     ServiceState::Stopped,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code:         windows_service::service::ServiceExitCode::Win32(0),
+        checkpoint:        0,
+        wait_hint:         Duration::ZERO,
+        process_id:        None,
+    })?;
+
+    Ok(())
+}
+
+// ── console mode ─────────────────────────────────────────────────────────────
+
+fn run_console() -> Result<()> {
+    tracing_subscriber::fmt::init();
+    let port = resolve_port();
+    tokio::runtime::Runtime::new()
+        .context("tokio runtime")?
+        .block_on(run_server(port))
+}
+
+// ── shared server ────────────────────────────────────────────────────────────
+
+async fn run_server(port: u16) -> Result<()> {
     let app = Router::new()
-        .route("/health", get(health))
-        .route("/print", post(handle_print));
+        .route("/health",    get(health))
+        .route("/printers",  get(handle_printers))
+        .route("/print",     post(handle_print_a4))   // default A4
+        .route("/print/a4",  post(handle_print_a4))
+        .route("/print/a5",  post(handle_print_a5));
 
     let addr = format!("127.0.0.1:{port}");
     let listener = TcpListener::bind(&addr)
@@ -60,10 +213,19 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-// ── handlers ─────────────────────────────────────────────────────────────────
-
+/// GET /health
 async fn health() -> Resp {
     ok()
+}
+
+/// GET /printers
+/// Returns JSON: { "default": "HP LaserJet", "printers": ["HP LaserJet", "Microsoft Print to PDF", ...] }
+async fn handle_printers() -> Resp {
+    match tokio::task::spawn_blocking(list_printers).await {
+        Ok(Ok(result)) => (StatusCode::OK, Json(result)),
+        Ok(Err(e)) => internal(e),
+        Err(e) => internal(format!("task panic: {e}")),
+    }
 }
 
 /// POST /print
@@ -71,9 +233,19 @@ async fn health() -> Resp {
 /// Multipart fields:
 ///   file    – PDF binary (required)
 ///   printer – printer name (optional, defaults to system default)
-async fn handle_print(mut multipart: Multipart) -> Resp {
+///   name    – print job name shown in spooler (optional, auto-generated if absent)
+async fn handle_print_a4(multipart: Multipart) -> Resp {
+    handle_print_with_size(multipart, PaperSize::A4).await
+}
+
+async fn handle_print_a5(multipart: Multipart) -> Resp {
+    handle_print_with_size(multipart, PaperSize::A5).await
+}
+
+async fn handle_print_with_size(mut multipart: Multipart, paper_size: PaperSize) -> Resp {
     let mut pdf_bytes: Option<Vec<u8>> = None;
     let mut printer: Option<String> = None;
+    let mut job_name: Option<String> = None;
 
     loop {
         match multipart.next_field().await {
@@ -83,9 +255,16 @@ async fn handle_print(mut multipart: Multipart) -> Resp {
                     Err(e) => return bad(format!("read field: {e}")),
                 },
                 Some("printer") => {
-                    if let Ok(name) = field.text().await {
-                        if !name.trim().is_empty() {
-                            printer = Some(name.trim().to_owned());
+                    if let Ok(v) = field.text().await {
+                        if !v.trim().is_empty() {
+                            printer = Some(v.trim().to_owned());
+                        }
+                    }
+                }
+                Some("name") => {
+                    if let Ok(v) = field.text().await {
+                        if !v.trim().is_empty() {
+                            job_name = Some(v.trim().to_owned());
                         }
                     }
                 }
@@ -96,30 +275,58 @@ async fn handle_print(mut multipart: Multipart) -> Resp {
         }
     }
 
+    // Auto-generate job name: doc-YYYYMMDD-HHMMSS
+    let job_name = job_name.unwrap_or_else(|| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        format!("doc-{now}")
+    });
+
     let data = match pdf_bytes {
         Some(d) if !d.is_empty() => d,
         _ => return bad("missing required 'file' field"),
     };
 
-    match tokio::task::spawn_blocking(move || silent_print(&data, printer.as_deref())).await {
-        Ok(Ok(())) => ok(),
-        Ok(Err(e)) => {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        tokio::task::spawn_blocking(move || {
+            silent_print(&data, printer.as_deref(), paper_size, &job_name)
+        }),
+    )
+    .await
+    {
+        Ok(Ok(Ok(()))) => ok(),
+        Ok(Ok(Err(e))) => {
             error!("{e:#}");
             internal(e)
         }
-        Err(e) => internal(format!("task panic: {e}")),
+        Ok(Err(e)) => internal(format!("task panic: {e}")),
+        Err(_) => internal("print timed out after 120 s"),
     }
 }
 
 // ── printing logic ───────────────────────────────────────────────────────────
 
-fn silent_print(data: &[u8], printer: Option<&str>) -> Result<()> {
-    // Write to a named temp file so the spooler can read it after we return.
-    // We intentionally keep the file alive for 60 s via a cleanup thread.
+fn silent_print(data: &[u8], printer: Option<&str>, paper_size: PaperSize, job_name: &str) -> Result<()> {
     let tmp_dir = std::env::temp_dir().join("print-util");
     std::fs::create_dir_all(&tmp_dir).context("create temp dir")?;
 
-    let path = tmp_dir.join(format!("{}.pdf", Uuid::new_v4()));
+    // Sanitize job name for use as filename: keep alphanumeric, space, dash, dot
+    let safe_name: String = job_name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '.' || c == ' ' { c } else { '_' })
+        .collect();
+    let safe_name = safe_name.trim();
+    let file_stem = if safe_name.is_empty() {
+        Uuid::new_v4().to_string()
+    } else {
+        // Append short UUID to avoid collisions between concurrent jobs
+        format!("{safe_name}-{}", &Uuid::new_v4().to_string()[..8])
+    };
+
+    let path = tmp_dir.join(format!("{file_stem}.pdf"));
 
     {
         let mut f = std::fs::File::create(&path).context("create temp file")?;
@@ -137,10 +344,10 @@ fn silent_print(data: &[u8], printer: Option<&str>) -> Result<()> {
     let path_str = path.to_str().context("non-UTF-8 temp path")?;
 
     #[cfg(windows)]
-    windows_print(path_str, printer)?;
+    windows_print(path_str, printer, paper_size, job_name)?;
 
     #[cfg(not(windows))]
-    unix_print(path_str, printer)?;
+    unix_print(path_str, printer, paper_size, job_name)?;
 
     Ok(())
 }
@@ -149,20 +356,20 @@ fn silent_print(data: &[u8], printer: Option<&str>) -> Result<()> {
 //
 // Priority:
 //   1. SumatraPDF        – fully silent, no window ever
-//   2. Ghostscript DLL   – gsdll64.dll loaded in-process, zero subprocess
-//   3. Ghostscript CLI   – subprocess, installed GS on PATH / ProgramFiles
+//   2. Ghostscript CLI   – subprocess with own message loop, zero dialog
+//   3. Ghostscript DLL   – gsdll64.dll loaded in-process (fallback)
 //   4. Adobe Acrobat / Reader – hidden with /h flag, may flash briefly
 //   5. ShellExecuteW fallback  – works but Chrome/Edge can prompt a dialog
 
 #[cfg(windows)]
-fn windows_print(path: &str, printer: Option<&str>) -> Result<()> {
-    if try_sumatrapdf(path, printer)? {
+fn windows_print(path: &str, printer: Option<&str>, paper_size: PaperSize, job_name: &str) -> Result<()> {
+    if try_sumatrapdf(path, printer, paper_size)? {
         return Ok(());
     }
-    if try_ghostscript_dll(path, printer)? {
+    if try_ghostscript(path, printer, paper_size, job_name)? {
         return Ok(());
     }
-    if try_ghostscript(path, printer)? {
+    if try_ghostscript_dll(path, printer, paper_size, job_name)? {
         return Ok(());
     }
     if try_acrobat(path, printer)? {
@@ -197,7 +404,7 @@ fn sumatra_candidates() -> Vec<std::path::PathBuf> {
 }
 
 #[cfg(windows)]
-fn try_sumatrapdf(path: &str, printer: Option<&str>) -> Result<bool> {
+fn try_sumatrapdf(path: &str, printer: Option<&str>, paper_size: PaperSize) -> Result<bool> {
     let exe = match sumatra_candidates()
         .into_iter()
         .find(|p| is_executable(p))
@@ -211,6 +418,8 @@ fn try_sumatrapdf(path: &str, printer: Option<&str>) -> Result<bool> {
         Some(p) => { cmd.arg("-print-to").arg(p); }
         None     => { cmd.arg("-print-to-default"); }
     }
+    cmd.arg("-print-settings")
+       .arg(format!("paper={}", paper_size.sumatra_name()));
     cmd.arg("-silent").arg(path);
 
     // CREATE_NO_WINDOW so the process is completely invisible
@@ -270,7 +479,7 @@ fn find_gsdll() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(windows)]
-fn try_ghostscript_dll(path: &str, printer: Option<&str>) -> Result<bool> {
+fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize, job_name: &str) -> Result<bool> {
     use libloading::{Library, Symbol};
     use std::ffi::CString;
 
@@ -300,18 +509,26 @@ fn try_ghostscript_dll(path: &str, printer: Option<&str>) -> Result<bool> {
         unsafe { lib.get(b"gsapi_delete_instance\0") }.context("gsapi_delete_instance")?;
 
     // Build argv
+    // Always pass -sOutputFile=%printer%<name>. Without it, GS shows a
+    // hidden printer-chooser dialog and hangs indefinitely.
+    let target_printer = printer
+        .map(str::to_owned)
+        .or_else(get_default_printer)
+        .context("no default printer found")?;
+
     let mut args_c: Vec<CString> = vec![
         CString::new("gs")?,
         CString::new("-dBATCH")?,
         CString::new("-dNOPAUSE")?,
-        CString::new("-dPrinted")?,
         CString::new("-dNOSAFER")?,
+        CString::new("-dNoCancel")?,
+        CString::new("-dFIXEDMEDIA")?,
+        CString::new(format!("-sPAPERSIZE={}", paper_size.gs_name()))?,
         CString::new("-q")?,
         CString::new("-sDEVICE=mswinpr2")?,
+        CString::new(format!("-sDocumentName={job_name}"))?,
+        CString::new(format!("-sOutputFile=%printer%{target_printer}"))?,
     ];
-    if let Some(p) = printer {
-        args_c.push(CString::new(format!("-sOutputFile=%printer%{p}"))?);
-    }
     args_c.push(CString::new(path)?);
 
     let mut argv: Vec<*mut i8> = args_c
@@ -373,7 +590,7 @@ fn ghostscript_candidates() -> Vec<std::path::PathBuf> {
 }
 
 #[cfg(windows)]
-fn try_ghostscript(path: &str, printer: Option<&str>) -> Result<bool> {
+fn try_ghostscript(path: &str, printer: Option<&str>, paper_size: PaperSize, job_name: &str) -> Result<bool> {
     let exe = match ghostscript_candidates()
         .into_iter()
         .find(|p| is_executable(p))
@@ -383,15 +600,18 @@ fn try_ghostscript(path: &str, printer: Option<&str>) -> Result<bool> {
     };
 
     let mut cmd = std::process::Command::new(&exe);
-    cmd.args(["-dBATCH", "-dNOPAUSE", "-dPrinted", "-dNOSAFER", "-q"]);
+    cmd.args(["-dBATCH", "-dNOPAUSE", "-dNOSAFER", "-dNoCancel", "-dFIXEDMEDIA", "-q"]);
+    cmd.arg(format!("-sPAPERSIZE={}", paper_size.gs_name()));
     cmd.arg("-sDEVICE=mswinpr2");
+    cmd.arg(format!("-sDocumentName={job_name}"));
 
-    match printer {
-        Some(p) => { cmd.arg(format!("-sOutputFile=%printer%{p}")); }
-        None => {
-            // mswinpr2 without -sOutputFile uses the Windows default printer
-        }
-    }
+    // Always pass -sOutputFile=%printer%<name>. Without it, GS shows a
+    // hidden printer-chooser dialog and hangs indefinitely.
+    let target_printer = printer
+        .map(str::to_owned)
+        .or_else(get_default_printer)
+        .context("no default printer found")?;
+    cmd.arg(format!("-sOutputFile=%printer%{target_printer}"));
 
     cmd.arg(path);
 
@@ -545,13 +765,96 @@ fn which_in_path(exe: &std::path::Path) -> bool {
 // ── Unix fallback: lp(1) ─────────────────────────────────────────────────────
 
 #[cfg(not(windows))]
-fn unix_print(path: &str, printer: Option<&str>) -> Result<()> {
+fn unix_print(path: &str, printer: Option<&str>, paper_size: PaperSize, job_name: &str) -> Result<()> {
     let mut cmd = std::process::Command::new("lp");
     if let Some(p) = printer {
         cmd.arg("-d").arg(p);
     }
+    cmd.arg("-t").arg(job_name);
+    cmd.arg("-o").arg(format!("media={}", paper_size.lp_media()));
     let status = cmd.arg(path).status().context("spawn lp")?;
     anyhow::ensure!(status.success(), "lp exited with {status}");
     info!("print job submitted for '{path}'");
     Ok(())
+}
+
+// ── list printers ─────────────────────────────────────────────────────────────
+
+#[cfg(windows)]
+fn list_printers() -> Result<Value> {
+    use windows::Win32::Graphics::Printing::{
+        EnumPrintersW, PRINTER_ENUM_LOCAL, PRINTER_ENUM_CONNECTIONS, PRINTER_INFO_4W,
+    };
+    use windows::core::PWSTR;
+
+    let flags = PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS;
+    let level = 4u32;
+
+    // First call: get required buffer size
+    let mut needed: u32 = 0;
+    let mut count: u32 = 0;
+    unsafe {
+        let _ = EnumPrintersW(flags, PWSTR::null(), level, None, &mut needed, &mut count);
+    }
+
+    if needed == 0 {
+        return Ok(json!({ "default": get_default_printer(), "printers": [] }));
+    }
+
+    let mut buf: Vec<u8> = vec![0u8; needed as usize];
+    unsafe {
+        EnumPrintersW(
+            flags,
+            PWSTR::null(),
+            level,
+            Some(&mut buf),
+            &mut needed,
+            &mut count,
+        )
+    }.ok().context("EnumPrintersW")?;
+
+    let infos = unsafe {
+        std::slice::from_raw_parts(buf.as_ptr() as *const PRINTER_INFO_4W, count as usize)
+    };
+
+    let names: Vec<String> = infos
+        .iter()
+        .map(|info| unsafe { info.pPrinterName.to_string().unwrap_or_default() })
+        .collect();
+
+    Ok(json!({
+        "default": get_default_printer(),
+        "printers": names,
+    }))
+}
+
+#[cfg(windows)]
+fn get_default_printer() -> Option<String> {
+    use windows::Win32::Graphics::Printing::GetDefaultPrinterW;
+    use windows::core::PWSTR;
+    let mut size: u32 = 0;
+    unsafe { let _ = GetDefaultPrinterW(PWSTR::null(), &mut size); }
+    if size == 0 { return None; }
+    let mut buf: Vec<u16> = vec![0u16; size as usize];
+    let ok = unsafe { GetDefaultPrinterW(PWSTR(buf.as_mut_ptr()), &mut size) };
+    if ok.as_bool() {
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..len]))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(windows))]
+fn list_printers() -> Result<Value> {
+    // Unix: parse `lpstat -a`
+    let out = std::process::Command::new("lpstat").arg("-a").output();
+    let names: Vec<String> = match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter_map(|l| l.split_whitespace().next().map(str::to_owned))
+            .collect(),
+        Err(_) => vec![],
+    };
+    Ok(json!({ "default": null, "printers": names }))
 }

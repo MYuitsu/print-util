@@ -12,7 +12,7 @@
 #define AppURL       "https://github.com/MYuitsu/print-util"
 #define AppExe       "print-util.exe"
 #define ServiceName  "print-util"
-#define ServicePort  "3000"
+#define ServicePort  "17474"
 
 [Setup]
 AppId={{B4F1A2C3-1234-4567-ABCD-0123456789EF}

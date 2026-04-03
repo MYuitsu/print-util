@@ -8,6 +8,8 @@
 gsdll64.dll
 gsdll32.dll
 vendor/gs/
+installer/vendor/*.dll
+installer/vendor/*.exe
 
 # Temp PDF files created at runtime
 *.pdf

@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "print-util Debug",
+  "version": "0.1.0",
+  "description": "Debug tool – kiểm tra kết nối và in thử qua print-util server.",
+  "permissions": ["activeTab", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "print-util Debug"
+  }
+}

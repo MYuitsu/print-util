@@ -58,14 +58,14 @@ Copy-Item "C:\Program Files\gs\gs10.04.0\bin\gsdll64.dll" installer\vendor\
 ## Chạy server
 
 ```powershell
-# Port mặc định: 3000
+# Port mặc định: 17474
 .\print-util.exe
 
 # Chỉ định port
 .\print-util.exe 8080
 
 # Hoặc qua biến môi trường
-$env:PORT = 9000; .\print-util.exe
+$env:PORT = 17474; .\print-util.exe
 ```
 
 Server chỉ lắng nghe trên `127.0.0.1` (localhost), không expose ra ngoài.
@@ -117,10 +117,10 @@ In một file PDF.
 
 ```bash
 # In bằng máy in mặc định
-curl -X POST http://127.0.0.1:3000/print -F "file=@document.pdf"
+curl -X POST http://127.0.0.1:17474/print -F "file=@document.pdf"
 
 # Chỉ định máy in
-curl -X POST http://127.0.0.1:3000/print \
+curl -X POST http://127.0.0.1:17474/print \
   -F "file=@document.pdf" \
   -F "printer=HP LaserJet Pro"
 ```
@@ -128,7 +128,7 @@ curl -X POST http://127.0.0.1:3000/print \
 ### PowerShell
 
 ```powershell
-$response = Invoke-RestMethod -Uri http://127.0.0.1:3000/print `
+$response = Invoke-RestMethod -Uri http://127.0.0.1:17474/print `
   -Method POST `
   -Form @{ file = Get-Item .\document.pdf }
 $response
@@ -141,7 +141,7 @@ const form = new FormData();
 form.append('file', pdfBlob, 'document.pdf');
 // form.append('printer', 'HP LaserJet Pro'); // tuỳ chọn
 
-const res = await fetch('http://127.0.0.1:3000/print', {
+const res = await fetch('http://127.0.0.1:17474/print', {
   method: 'POST',
   body: form,
 });
@@ -156,7 +156,7 @@ import requests
 
 with open('document.pdf', 'rb') as f:
     res = requests.post(
-        'http://127.0.0.1:3000/print',
+        'http://127.0.0.1:17474/print',
         files={'file': ('document.pdf', f, 'application/pdf')},
         data={'printer': 'HP LaserJet Pro'},  # tuỳ chọn
     )
@@ -169,7 +169,7 @@ Dùng [NSSM](https://nssm.cc) để chạy background:
 
 ```powershell
 nssm install print-util "C:\path\to\print-util.exe"
-nssm set print-util AppEnvironmentExtra PORT=3000
+nssm set print-util AppEnvironmentExtra PORT=17474
 nssm start print-util
 ```
 

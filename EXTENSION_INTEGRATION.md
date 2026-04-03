@@ -94,7 +94,7 @@ Content-Type: multipart/form-data
 Đây là hàm tham khảo có thể dùng thẳng trong `background.js`:
 
 ```js
-const PRINT_SERVER = 'http://127.0.0.1:3000';
+const PRINT_SERVER = 'http://127.0.0.1:17474';
 
 /**
  * Kiểm tra server có sẵn sàng không.
