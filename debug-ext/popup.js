@@ -81,7 +81,18 @@ document.getElementById('btn-reload-printers').addEventListener('click', () => l
 
 // ── /print/a4 và /print/a5 ───────────────────────────────────────────────────
 
+const btnA4 = document.getElementById('btn-print-a4');
+const btnA5 = document.getElementById('btn-print-a5');
+
+function setPrinting(active) {
+  btnA4.disabled = active;
+  btnA5.disabled = active;
+  btnA4.style.opacity = active ? '0.5' : '';
+  btnA5.style.opacity = active ? '0.5' : '';
+}
+
 async function doPrint(size) {
+  if (btnA4.disabled) return; // already printing
   const base     = serverInput.value.trim().replace(/\/$/, '');
   const pdfUrl   = pdfUrlInput.value.trim();
   const printer  = printerSelect.value || undefined;
@@ -93,6 +104,7 @@ async function doPrint(size) {
     return;
   }
 
+  setPrinting(true);
   log(`[${ts()}] Đang tải PDF: ${pdfUrl}`, 'inf');
   let blob;
   try {
@@ -103,6 +115,7 @@ async function doPrint(size) {
   } catch (e) {
     log(`[${ts()}] ✗ Không tải được PDF: ${e.message}`, 'err');
     log(`        → Kiểm tra URL, CORS, hoặc file có tồn tại không`, 'err');
+    setPrinting(false);
     return;
   }
 
@@ -129,6 +142,8 @@ async function doPrint(size) {
     }
   } catch (e) {
     log(`[${ts()}] ✗ ${e.message}`, 'err');
+  } finally {
+    setPrinting(false);
   }
 }
 

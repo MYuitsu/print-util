@@ -439,18 +439,23 @@ fn silent_print(data: &[u8], printer: Option<&str>, paper_size: Option<PaperSize
 
 #[cfg(windows)]
 fn windows_print(path: &str, printer: Option<&str>, paper_size: PaperSize, job_name: &str) -> Result<()> {
-    if try_sumatrapdf(path, printer, paper_size)? {
-        return Ok(());
+    // Each engine returns Ok(true)=printed, Ok(false)=not installed, Err=found but failed.
+    // On error we log a warning and try the next engine so that a single bad exit-code
+    // never causes the user to retry (which would produce a duplicate print job).
+    macro_rules! try_engine {
+        ($call:expr, $name:literal) => {
+            match $call {
+                Ok(true)  => return Ok(()),
+                Ok(false) => {}
+                Err(e)    => tracing::warn!("{} failed, trying next engine: {:#}", $name, e),
+            }
+        };
     }
-    if try_ghostscript(path, printer, paper_size, job_name)? {
-        return Ok(());
-    }
-    if try_ghostscript_dll(path, printer, paper_size, job_name)? {
-        return Ok(());
-    }
-    if try_acrobat(path, printer)? {
-        return Ok(());
-    }
+
+    try_engine!(try_sumatrapdf(path, printer, paper_size),           "SumatraPDF");
+    try_engine!(try_ghostscript(path, printer, paper_size, job_name), "Ghostscript CLI");
+    try_engine!(try_ghostscript_dll(path, printer, paper_size, job_name), "Ghostscript DLL");
+    try_engine!(try_acrobat(path, printer),                           "Acrobat");
     shell_execute_print(path, printer)
 }
 
@@ -698,11 +703,14 @@ fn try_ghostscript(path: &str, printer: Option<&str>, paper_size: PaperSize, job
     }
 
     let output = cmd.output().with_context(|| format!("launch {}", exe.display()))?;
-    if !output.status.success() {
+    // GS sometimes exits with e_Quit (-101) even after a successful print.
+    // Treat 0 and -101 both as success.
+    let code = output.status.code().unwrap_or(-1);
+    if code != 0 && code != -101 {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Ghostscript exited with {}: {}", output.status, stderr.trim());
+        anyhow::bail!("Ghostscript exited with {code}: {}", stderr.trim());
     }
-    info!("print job submitted via Ghostscript for '{path}'");
+    info!("print job submitted via Ghostscript CLI for '{path}'");
     Ok(true)
 }
 
