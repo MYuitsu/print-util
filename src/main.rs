@@ -648,6 +648,16 @@ fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize,
     };
     info!("[GS DLL] dùng: {}", dll_path.display());
 
+    // Find GS lib dir and build -I<lib> arg so GS can locate gs_init.ps
+    let gs_lib_arg: Option<String> = find_gs_lib(&dll_path)
+        .map(|lib| {
+            info!("[GS DLL] GS_LIB={}", lib.display());
+            format!("-I{}", lib.display())
+        });
+    if gs_lib_arg.is_none() {
+        tracing::warn!("[GS DLL] GS_LIB không tìm thấy — có thể treo");
+    }
+
     // Resolve default printer before spawning thread
     let target_printer = printer
         .map(str::to_owned)
@@ -655,7 +665,7 @@ fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize,
         .context("no default printer found")?;
 
     // Build args as owned Strings so they can be moved into the thread.
-    let args_strings: Vec<String> = vec![
+    let mut args_strings: Vec<String> = vec![
         "gs".into(),
         "-dBATCH".into(),
         "-dNOPAUSE".into(),
@@ -668,8 +678,11 @@ fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize,
         "-sDEVICE=mswinpr2".into(),
         format!("-sDocumentName={job_name}"),
         format!("-sOutputFile=%printer%{target_printer}"),
-        path.to_owned(),
     ];
+    if let Some(lib_arg) = gs_lib_arg {
+        args_strings.push(lib_arg);
+    }
+    args_strings.push(path.to_owned());
 
     info!("[GS DLL] args: {:?}", args_strings);
     info!("[GS DLL] spawning print thread (timeout=25s)...");
@@ -777,6 +790,41 @@ fn ghostscript_candidates() -> Vec<std::path::PathBuf> {
     paths
 }
 
+/// Find the GS `lib` directory that contains gs_init.ps and font resources.
+/// Searched paths (first match wins):
+///   a) <gs_exe_dir>/../lib           – works when exe is in bin/ inside a full install
+///   b) %ProgramFiles%\gs\<ver>\lib   – standard install
+///   c) %ProgramFiles(x86)%\gs\…
+#[cfg(windows)]
+fn find_gs_lib(gs_exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    // a) sibling lib/ of the exe's parent (exe is in bin/, lib/ is next to bin/)
+    if let Some(bin_dir) = gs_exe.parent() {
+        let lib = bin_dir.parent().unwrap_or(bin_dir).join("lib");
+        if lib.join("gs_init.ps").is_file() {
+            return Some(lib);
+        }
+        // also try same dir (bundled flat layout)
+        let lib2 = bin_dir.join("lib");
+        if lib2.join("gs_init.ps").is_file() {
+            return Some(lib2);
+        }
+    }
+    // b/c) scan standard install dirs
+    for pf in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Ok(root) = std::env::var(pf) {
+            if let Ok(entries) = std::fs::read_dir(format!(r"{root}\gs")) {
+                for entry in entries.flatten() {
+                    let lib = entry.path().join("lib");
+                    if lib.join("gs_init.ps").is_file() {
+                        return Some(lib);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(windows)]
 fn try_ghostscript(path: &str, printer: Option<&str>, paper_size: PaperSize, job_name: &str) -> Result<bool> {
     let exe = match ghostscript_candidates()
@@ -793,6 +841,16 @@ fn try_ghostscript(path: &str, printer: Option<&str>, paper_size: PaperSize, job
 
     let mut cmd = std::process::Command::new(&exe);
     cmd.args(["-dBATCH", "-dNOPAUSE", "-dNOSAFER", "-dNoCancel", "-dNOINTERACTIVE", "-dFIXEDMEDIA", "-q"]);
+
+    // Pass GS_LIB so the bundled stub exe can find gs_init.ps and fonts.
+    // Without this, gswin64c.exe hangs when it can't find its resource files.
+    if let Some(lib) = find_gs_lib(&exe) {
+        info!("[GS CLI] GS_LIB={}", lib.display());
+        cmd.env("GS_LIB", &lib);
+    } else {
+        tracing::warn!("[GS CLI] GS_LIB không tìm thấy — GS có thể treo nếu resource files không có");
+    }
+
     cmd.arg(format!("-sPAPERSIZE={}", paper_size.gs_name()));
     cmd.arg("-sDEVICE=mswinpr2");
     cmd.arg(format!("-sDocumentName={job_name}"));
