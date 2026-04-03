@@ -211,7 +211,7 @@ fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
     let log_dir = if cfg!(windows) {
         std::env::var("ProgramData")
             .map(|d| std::path::PathBuf::from(d).join("print-util"))
-            .unwrap_or_else(|_| std::env::temp_dir().join("print-util"))
+            .unwrap_or_else(|_| std::path::PathBuf::from(r"C:\ProgramData\print-util"))
     } else {
         std::path::PathBuf::from("/var/log/print-util")
     };

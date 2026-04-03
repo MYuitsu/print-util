@@ -7,7 +7,7 @@
 ; Output: installer\Output\print-util-x.x.x-setup.exe
 
 #define AppName      "print-util"
-#define AppVersion   "0.2.9"
+#define AppVersion   "0.3.0"
 #define AppPublisher "print-util contributors"
 #define AppURL       "https://github.com/MYuitsu/print-util"
 #define AppExe       "print-util.exe"
@@ -52,6 +52,9 @@ Source: "vendor\gswin64c.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsour
 ; GS resource files (gs_init.ps, fonts, etc.) required by gswin64c.exe
 Source: "vendor\gs_lib\*"; DestDir: "{app}\gs_lib"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
 
+; SumatraPDF portable (primary print engine – single self-contained exe)
+Source: "vendor\SumatraPDF.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+
 [Icons]
 ; No desktop/start menu shortcut needed for a background service
 
@@ -75,7 +78,8 @@ Filename: "{sys}\sc.exe"; Parameters: "stop ""{#ServiceName}""";  Flags: runhidd
 Filename: "{sys}\sc.exe"; Parameters: "delete ""{#ServiceName}"""; Flags: runhidden waituntilterminated
 
 [Code]
-// Stop existing service before upgrading
+// On upgrade: stop and delete old service so sc.exe create in [Run] succeeds.
+// Errors are intentionally ignored (service may not exist on first install).
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
@@ -83,6 +87,8 @@ begin
   if CurStep = ssInstall then
   begin
     Exec(ExpandConstant('{sys}\sc.exe'), 'stop "{#ServiceName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Sleep(1500);
+    Sleep(2000);
+    Exec(ExpandConstant('{sys}\sc.exe'), 'delete "{#ServiceName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(500);
   end;
 end;

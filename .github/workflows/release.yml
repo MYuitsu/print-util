@@ -97,6 +97,22 @@ jobs:
             Write-Warning "gs_init.ps not found - gs_lib not staged"
           }
 
+      # SumatraPDF portable (primary print engine – single self-contained exe, MIT)
+      - name: Cache SumatraPDF
+        id: cache-sumatra
+        uses: actions/cache@v4
+        with:
+          path: installer/vendor/SumatraPDF.exe
+          key: SumatraPDF-3.6
+
+      - name: Bundle SumatraPDF
+        if: steps.cache-sumatra.outputs.cache-hit != 'true'
+        run: |
+          $url = "https://www.sumatrapdfreader.org/dl/rel/3.6/SumatraPDF-3.6-64.exe"
+          New-Item -ItemType Directory -Force installer\vendor | Out-Null
+          Invoke-WebRequest $url -OutFile installer\vendor\SumatraPDF.exe -Headers @{"User-Agent"="print-util-ci"}
+          Write-Host "Staged SumatraPDF: $((Get-Item installer\vendor\SumatraPDF.exe).Length) bytes"
+
       - name: Build installer
         run: iscc installer\setup.iss
 
