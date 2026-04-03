@@ -104,6 +104,7 @@ fn service_main(_args: Vec<std::ffi::OsString>) {
 
 #[cfg(windows)]
 fn run_service() -> Result<()> {
+    let _log_guard = init_logging();
     use std::time::Duration;
     use windows_service::{
         service::ServiceControl,
@@ -186,11 +187,59 @@ fn run_service() -> Result<()> {
 // ── console mode ─────────────────────────────────────────────────────────────
 
 fn run_console() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    let _guard = init_logging();
     let port = resolve_port();
     tokio::runtime::Runtime::new()
         .context("tokio runtime")?
         .block_on(run_server(port))
+}
+
+// ── logging setup ─────────────────────────────────────────────────────────────
+//
+// Writes to two sinks simultaneously:
+//   1. Stdout / stderr   – for interactive use and journald
+//   2. Rolling daily log – %ProgramData%\print-util\print-util.log
+//                          (kept for 7 days, ~1 file/day)
+//
+// Log level is controlled by the RUST_LOG env var (default: info).
+// Returns a WorkerGuard that must be kept alive for the duration of the
+// process to ensure all log records are flushed when the process exits.
+
+fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+    let log_dir = if cfg!(windows) {
+        std::env::var("ProgramData")
+            .map(|d| std::path::PathBuf::from(d).join("print-util"))
+            .unwrap_or_else(|_| std::env::temp_dir().join("print-util"))
+    } else {
+        std::path::PathBuf::from("/var/log/print-util")
+    };
+
+    let _ = std::fs::create_dir_all(&log_dir);
+
+    let file_appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("print-util")
+        .filename_suffix("log")
+        .max_log_files(7)
+        .build(&log_dir)
+        .expect("failed to create log appender");
+
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        // console layer
+        .with(fmt::layer().with_writer(std::io::stderr))
+        // file layer (no ANSI colour codes)
+        .with(fmt::layer().with_ansi(false).with_writer(non_blocking))
+        .init();
+
+    guard
 }
 
 // ── shared server ────────────────────────────────────────────────────────────
