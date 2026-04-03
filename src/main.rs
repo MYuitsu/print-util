@@ -639,9 +639,6 @@ fn find_gsdll() -> Option<std::path::PathBuf> {
 
 #[cfg(windows)]
 fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize, job_name: &str) -> Result<bool> {
-    use libloading::{Library, Symbol};
-    use std::ffi::CString;
-
     let dll_path = match find_gsdll() {
         Some(p) => p,
         None => {
@@ -651,72 +648,92 @@ fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize,
     };
     info!("[GS DLL] dùng: {}", dll_path.display());
 
-    // SAFETY: we hold `lib` alive until after gsapi_delete_instance.
-    let lib = unsafe { Library::new(&dll_path) }
-        .with_context(|| format!("load {}", dll_path.display()))?;
-
-    type GsNewInstance =
-        unsafe extern "C" fn(*mut *mut std::ffi::c_void, *mut std::ffi::c_void) -> i32;
-    type GsInitWithArgs =
-        unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut *mut i8) -> i32;
-    type GsExit = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
-    type GsDeleteInstance = unsafe extern "C" fn(*mut std::ffi::c_void);
-
-    let gs_new: Symbol<GsNewInstance> =
-        unsafe { lib.get(b"gsapi_new_instance\0") }.context("gsapi_new_instance")?;
-    let gs_init: Symbol<GsInitWithArgs> =
-        unsafe { lib.get(b"gsapi_init_with_args\0") }.context("gsapi_init_with_args")?;
-    let gs_exit: Symbol<GsExit> =
-        unsafe { lib.get(b"gsapi_exit\0") }.context("gsapi_exit")?;
-    let gs_delete: Symbol<GsDeleteInstance> =
-        unsafe { lib.get(b"gsapi_delete_instance\0") }.context("gsapi_delete_instance")?;
-
-    // Build argv
-    // Always pass -sOutputFile=%printer%<name>. Without it, GS shows a
-    // hidden printer-chooser dialog and hangs indefinitely.
+    // Resolve default printer before spawning thread
     let target_printer = printer
         .map(str::to_owned)
         .or_else(get_default_printer)
         .context("no default printer found")?;
 
-    let mut args_c: Vec<CString> = vec![
-        CString::new("gs")?,
-        CString::new("-dBATCH")?,
-        CString::new("-dNOPAUSE")?,
-        CString::new("-dNOSAFER")?,
-        CString::new("-dNoCancel")?,
-        CString::new("-dFIXEDMEDIA")?,
-        CString::new(format!("-sPAPERSIZE={}", paper_size.gs_name()))?,
-        CString::new("-q")?,
-        CString::new("-sDEVICE=mswinpr2")?,
-        CString::new(format!("-sDocumentName={job_name}"))?,
-        CString::new(format!("-sOutputFile=%printer%{target_printer}"))?,
+    // Build args as owned Strings so they can be moved into the thread.
+    let args_strings: Vec<String> = vec![
+        "gs".into(),
+        "-dBATCH".into(),
+        "-dNOPAUSE".into(),
+        "-dNOSAFER".into(),
+        "-dNoCancel".into(),
+        "-dNOINTERACTIVE".into(),    // prevent any blocking prompt
+        "-dFIXEDMEDIA".into(),
+        format!("-sPAPERSIZE={}", paper_size.gs_name()),
+        "-q".into(),
+        "-sDEVICE=mswinpr2".into(),
+        format!("-sDocumentName={job_name}"),
+        format!("-sOutputFile=%printer%{target_printer}"),
+        path.to_owned(),
     ];
-    args_c.push(CString::new(path)?);
 
-    let mut argv: Vec<*mut i8> = args_c
-        .iter()
-        .map(|s| s.as_ptr() as *mut i8)
-        .collect();
+    info!("[GS DLL] args: {:?}", args_strings);
+    info!("[GS DLL] spawning print thread (timeout=25s)...");
 
-    let mut instance: *mut std::ffi::c_void = std::ptr::null_mut();
+    // gsapi_init_with_args can block indefinitely if the printer is busy or
+    // if GS tries to show a hidden dialog.  Run in a detached thread and
+    // collect the result via a channel; if it doesn't finish within 25 s we
+    // fall through to the ShellExecuteW fallback without killing the process.
+    let (tx, rx) = std::sync::mpsc::channel::<anyhow::Result<i32>>();
 
-    info!("[GS DLL] args: {:?}", args_c.iter().map(|c| c.to_string_lossy()).collect::<Vec<_>>());
-    let rc = unsafe { gs_new(&mut instance, std::ptr::null_mut()) };
-    anyhow::ensure!(rc == 0, "gsapi_new_instance failed: {rc}");
+    std::thread::spawn(move || {
+        use libloading::{Library, Symbol};
+        use std::ffi::CString;
 
-    let rc = unsafe { gs_init(instance, argv.len() as i32, argv.as_mut_ptr()) };
-    info!("[GS DLL] gsapi_init_with_args → rc={rc}");
-    let _ = unsafe { gs_exit(instance) };
-    unsafe { gs_delete(instance) };
+        let result: anyhow::Result<i32> = (|| {
+            let lib = unsafe { Library::new(&dll_path) }
+                .with_context(|| format!("load {}", dll_path.display()))?;
 
-    // GS returns -101 (e_Quit) as a normal "finished" code; treat as success.
-    anyhow::ensure!(
-        rc == 0 || rc == -101,
-        "gsapi_init_with_args failed: {rc}"
-    );
-    info!("[GS DLL] print job submitted via Ghostscript DLL for '{path}'");
-    Ok(true)
+            type GsNew  = unsafe extern "C" fn(*mut *mut std::ffi::c_void, *mut std::ffi::c_void) -> i32;
+            type GsInit = unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut *mut i8) -> i32;
+            type GsExit = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+            type GsDel  = unsafe extern "C" fn(*mut std::ffi::c_void);
+
+            let gs_new:  Symbol<GsNew>  = unsafe { lib.get(b"gsapi_new_instance\0") }?;
+            let gs_init: Symbol<GsInit> = unsafe { lib.get(b"gsapi_init_with_args\0") }?;
+            let gs_exit: Symbol<GsExit> = unsafe { lib.get(b"gsapi_exit\0") }?;
+            let gs_del:  Symbol<GsDel>  = unsafe { lib.get(b"gsapi_delete_instance\0") }?;
+
+            let args_c: Vec<CString> = args_strings
+                .iter()
+                .map(|s| CString::new(s.as_str()).expect("nul in arg"))
+                .collect();
+            let mut argv: Vec<*mut i8> = args_c.iter().map(|s| s.as_ptr() as *mut i8).collect();
+
+            let mut inst: *mut std::ffi::c_void = std::ptr::null_mut();
+            let rc = unsafe { gs_new(&mut inst, std::ptr::null_mut()) };
+            anyhow::ensure!(rc == 0, "gsapi_new_instance failed: {rc}");
+
+            let rc = unsafe { gs_init(inst, argv.len() as i32, argv.as_mut_ptr()) };
+            let _ = unsafe { gs_exit(inst) };
+            unsafe { gs_del(inst) };
+            Ok(rc)
+        })();
+
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(std::time::Duration::from_secs(25)) {
+        Ok(Ok(rc)) => {
+            info!("[GS DLL] gsapi_init_with_args → rc={rc}");
+            // GS returns -101 (e_Quit) as a normal "finished" code.
+            anyhow::ensure!(rc == 0 || rc == -101, "gsapi_init_with_args failed: {rc}");
+            info!("[GS DLL] print job submitted ok for '{path}'");
+            Ok(true)
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("[GS DLL] error: {e:#}");
+            Err(e)
+        }
+        Err(_) => {
+            tracing::warn!("[GS DLL] timed out after 25s — chuyển sang engine tiếp theo");
+            Ok(false) // fall through to ShellExecuteW
+        }
+    }
 }
 
 // ── 3. Ghostscript CLI ────────────────────────────────────────────────────────
@@ -769,7 +786,7 @@ fn try_ghostscript(path: &str, printer: Option<&str>, paper_size: PaperSize, job
     info!("[GS CLI] dùng: {}", exe.display());
 
     let mut cmd = std::process::Command::new(&exe);
-    cmd.args(["-dBATCH", "-dNOPAUSE", "-dNOSAFER", "-dNoCancel", "-dFIXEDMEDIA", "-q"]);
+    cmd.args(["-dBATCH", "-dNOPAUSE", "-dNOSAFER", "-dNoCancel", "-dNOINTERACTIVE", "-dFIXEDMEDIA", "-q"]);
     cmd.arg(format!("-sPAPERSIZE={}", paper_size.gs_name()));
     cmd.arg("-sDEVICE=mswinpr2");
     cmd.arg(format!("-sDocumentName={job_name}"));
