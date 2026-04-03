@@ -1,6 +1,6 @@
 [package]
 name = "print-util"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 description = "Silent local print server – accepts a PDF via HTTP multipart and prints without any dialog"
 

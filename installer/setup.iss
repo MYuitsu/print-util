@@ -7,7 +7,7 @@
 ; Output: installer\Output\print-util-x.x.x-setup.exe
 
 #define AppName      "print-util"
-#define AppVersion   "0.2.5"
+#define AppVersion   "0.2.6"
 #define AppPublisher "print-util contributors"
 #define AppURL       "https://github.com/MYuitsu/print-util"
 #define AppExe       "print-util.exe"
@@ -48,6 +48,7 @@ Source: "..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 ; Optional: bundle gsdll64.dll if present next to this script
 ; (Comment out if you don't bundle GS due to AGPL)
 Source: "vendor\gsdll64.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "vendor\gswin64c.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 ; No desktop/start menu shortcut needed for a background service

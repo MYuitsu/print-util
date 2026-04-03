@@ -59,7 +59,9 @@ jobs:
         id: cache-gs
         uses: actions/cache@v4
         with:
-          path: installer/vendor/gsdll64.dll
+          path: |
+            installer/vendor/gsdll64.dll
+            installer/vendor/gswin64c.exe
           key: gsdll64-${{ steps.gs.outputs.filename }}
 
       # Download and bundle gsdll64.dll (Ghostscript AGPL, bundling allowed for OSS)
@@ -76,6 +78,14 @@ jobs:
           if (-not $dll) { throw "gsdll64.dll not found in extracted archive" }
           Copy-Item $dll.FullName installer\vendor\gsdll64.dll
           Write-Host "Staged $($dll.FullName)"
+          # Also bundle the CLI executable (used as primary print engine)
+          $cli = Get-ChildItem gs-extract -Recurse -Filter "gswin64c.exe" | Select-Object -First 1
+          if ($cli) {
+            Copy-Item $cli.FullName installer\vendor\gswin64c.exe
+            Write-Host "Staged CLI: $($cli.FullName)"
+          } else {
+            Write-Warning "gswin64c.exe not found in archive – DLL-only bundle"
+          }
 
       - name: Build installer
         run: iscc installer\setup.iss

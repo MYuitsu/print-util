@@ -756,6 +756,12 @@ fn ghostscript_candidates() -> Vec<std::path::PathBuf> {
         std::path::PathBuf::from("gswin32c.exe"),
         std::path::PathBuf::from("gs.exe"),
     ];
+    // Bundled next to the running exe (installed by setup.iss)
+    if let Ok(exe) = std::env::current_exe() {
+        let dir = exe.parent().unwrap_or(std::path::Path::new("."));
+        paths.insert(0, dir.join("gswin64c.exe"));
+        paths.insert(1, dir.join("gswin32c.exe"));
+    }
     for pf in ["ProgramFiles", "ProgramFiles(x86)"] {
         if let Ok(root) = std::env::var(pf) {
             // Ghostscript installs under  %PF%\gs\gsX.XX\bin\
