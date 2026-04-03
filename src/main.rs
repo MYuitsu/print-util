@@ -717,7 +717,7 @@ fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize,
         let _ = tx.send(result);
     });
 
-    match rx.recv_timeout(std::time::Duration::from_secs(25)) {
+    match rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(Ok(rc)) => {
             info!("[GS DLL] gsapi_init_with_args → rc={rc}");
             // GS returns -101 (e_Quit) as a normal "finished" code.
@@ -730,7 +730,7 @@ fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize,
             Err(e)
         }
         Err(_) => {
-            tracing::warn!("[GS DLL] timed out after 25s — chuyển sang engine tiếp theo");
+            tracing::warn!("[GS DLL] timed out after 5s — chuyển sang engine tiếp theo");
             Ok(false) // fall through to ShellExecuteW
         }
     }
