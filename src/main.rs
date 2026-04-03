@@ -369,7 +369,9 @@ async fn handle_print_with_size(mut multipart: Multipart, paper_size: Option<Pap
 // Defaults to A4 when the size cannot be determined.
 
 fn detect_paper_size(data: &[u8]) -> PaperSize {
-    parse_media_box(data).unwrap_or(PaperSize::A4)
+    let result = parse_media_box(data).unwrap_or(PaperSize::A4);
+    info!("detect_paper_size → {:?}", result);
+    result
 }
 
 fn parse_media_box(data: &[u8]) -> Option<PaperSize> {
@@ -394,14 +396,17 @@ fn parse_media_box(data: &[u8]) -> Option<PaperSize> {
                 if nums.len() == 4 {
                     let w = (nums[2] - nums[0]).abs();
                     let h = (nums[3] - nums[1]).abs();
+                    info!("MediaBox raw=[{}] → w={:.1}pt h={:.1}pt", box_str.trim(), w, h);
                     if let Some(sz) = classify_paper(w, h) {
                         return Some(sz);
                     }
+                    tracing::warn!("MediaBox w={w:.1} h={h:.1} không khớp A4/A5, dùng A4 mặc định");
                 }
             }
         }
         i += 1;
     }
+    tracing::warn!("Không tìm thấy /MediaBox trong PDF, dùng A4 mặc định");
     None
 }
 
@@ -413,6 +418,7 @@ fn skip_ws(data: &[u8]) -> &[u8] {
 fn classify_paper(w: f64, h: f64) -> Option<PaperSize> {
     const TOL: f64 = 10.0;
     let (short, long) = if w <= h { (w, h) } else { (h, w) };
+    tracing::debug!("classify_paper short={short:.1} long={long:.1}");
     if (short - 420.0).abs() < TOL && (long - 595.0).abs() < TOL {
         return Some(PaperSize::A5);
     }
@@ -425,12 +431,19 @@ fn classify_paper(w: f64, h: f64) -> Option<PaperSize> {
 // ── printing logic ───────────────────────────────────────────────────────────
 
 fn silent_print(data: &[u8], printer: Option<&str>, paper_size: Option<PaperSize>, job_name: &str) -> Result<()> {
+    info!("silent_print start: job='{}' printer={:?} size_override={:?} pdf_bytes={}",
+        job_name, printer, paper_size, data.len());
+
     // Resolve paper size: explicit override, or auto-detect from PDF MediaBox.
     let paper_size = match paper_size {
-        Some(sz) => sz,
+        Some(sz) => {
+            info!("paper size: explicit {:?}", sz);
+            sz
+        }
         None => {
+            info!("paper size: auto-detecting from PDF MediaBox...");
             let sz = detect_paper_size(data);
-            info!("auto-detected paper size: {:?}", sz);
+            info!("paper size: auto-detected → {:?}", sz);
             sz
         }
     };
@@ -452,12 +465,14 @@ fn silent_print(data: &[u8], printer: Option<&str>, paper_size: Option<PaperSize
     };
 
     let path = tmp_dir.join(format!("{file_stem}.pdf"));
+    info!("temp file: {}", path.display());
 
     {
         let mut f = std::fs::File::create(&path).context("create temp file")?;
         f.write_all(data).context("write PDF data")?;
         f.flush().context("flush temp file")?;
     }
+    info!("temp file written ok");
 
     // Spawn cleanup thread – 60 s is plenty for the spooler to read the file.
     let cleanup = path.clone();
@@ -469,7 +484,11 @@ fn silent_print(data: &[u8], printer: Option<&str>, paper_size: Option<PaperSize
     let path_str = path.to_str().context("non-UTF-8 temp path")?;
 
     #[cfg(windows)]
-    windows_print(path_str, printer, paper_size, job_name)?;
+    {
+        info!("calling windows_print: path='{}' printer={:?} size={:?}", path_str, printer, paper_size);
+        windows_print(path_str, printer, paper_size, job_name)?;
+        info!("windows_print returned OK");
+    }
 
     #[cfg(not(windows))]
     unix_print(path_str, printer, paper_size, job_name)?;
@@ -501,10 +520,15 @@ fn windows_print(path: &str, printer: Option<&str>, paper_size: PaperSize, job_n
         };
     }
 
+    info!("[engine] thử SumatraPDF...");
     try_engine!(try_sumatrapdf(path, printer, paper_size),           "SumatraPDF");
+    info!("[engine] thử Ghostscript CLI...");
     try_engine!(try_ghostscript(path, printer, paper_size, job_name), "Ghostscript CLI");
+    info!("[engine] thử Ghostscript DLL...");
     try_engine!(try_ghostscript_dll(path, printer, paper_size, job_name), "Ghostscript DLL");
+    info!("[engine] thử Acrobat...");
     try_engine!(try_acrobat(path, printer),                           "Acrobat");
+    info!("[engine] fallback ShellExecuteW...");
     shell_execute_print(path, printer)
 }
 
@@ -540,8 +564,12 @@ fn try_sumatrapdf(path: &str, printer: Option<&str>, paper_size: PaperSize) -> R
         .find(|p| is_executable(p))
     {
         Some(e) => e,
-        None => return Ok(false),
+        None => {
+            info!("[SumatraPDF] không tìm thấy, bỏ qua");
+            return Ok(false);
+        }
     };
+    info!("[SumatraPDF] dùng: {}", exe.display());
 
     let mut cmd = std::process::Command::new(&exe);
     match printer {
@@ -551,6 +579,7 @@ fn try_sumatrapdf(path: &str, printer: Option<&str>, paper_size: PaperSize) -> R
     cmd.arg("-print-settings")
        .arg(format!("paper={}", paper_size.sumatra_name()));
     cmd.arg("-silent").arg(path);
+    info!("[SumatraPDF] args: {:?}", cmd.get_args().collect::<Vec<_>>());
 
     // CREATE_NO_WINDOW so the process is completely invisible
     #[cfg(windows)]
@@ -615,8 +644,12 @@ fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize,
 
     let dll_path = match find_gsdll() {
         Some(p) => p,
-        None => return Ok(false),
+        None => {
+            info!("[GS DLL] gsdll64.dll không tìm thấy, bỏ qua");
+            return Ok(false);
+        }
     };
+    info!("[GS DLL] dùng: {}", dll_path.display());
 
     // SAFETY: we hold `lib` alive until after gsapi_delete_instance.
     let lib = unsafe { Library::new(&dll_path) }
@@ -668,10 +701,12 @@ fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize,
 
     let mut instance: *mut std::ffi::c_void = std::ptr::null_mut();
 
+    info!("[GS DLL] args: {:?}", args_c.iter().map(|c| c.to_string_lossy()).collect::<Vec<_>>());
     let rc = unsafe { gs_new(&mut instance, std::ptr::null_mut()) };
     anyhow::ensure!(rc == 0, "gsapi_new_instance failed: {rc}");
 
     let rc = unsafe { gs_init(instance, argv.len() as i32, argv.as_mut_ptr()) };
+    info!("[GS DLL] gsapi_init_with_args → rc={rc}");
     let _ = unsafe { gs_exit(instance) };
     unsafe { gs_delete(instance) };
 
@@ -680,7 +715,7 @@ fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize,
         rc == 0 || rc == -101,
         "gsapi_init_with_args failed: {rc}"
     );
-    info!("print job submitted via Ghostscript DLL for '{path}'");
+    info!("[GS DLL] print job submitted via Ghostscript DLL for '{path}'");
     Ok(true)
 }
 
@@ -726,8 +761,12 @@ fn try_ghostscript(path: &str, printer: Option<&str>, paper_size: PaperSize, job
         .find(|p| is_executable(p))
     {
         Some(e) => e,
-        None => return Ok(false),
+        None => {
+            info!("[GS CLI] gswin64c/gswin32c không tìm thấy, bỏ qua");
+            return Ok(false);
+        }
     };
+    info!("[GS CLI] dùng: {}", exe.display());
 
     let mut cmd = std::process::Command::new(&exe);
     cmd.args(["-dBATCH", "-dNOPAUSE", "-dNOSAFER", "-dNoCancel", "-dFIXEDMEDIA", "-q"]);
@@ -751,15 +790,20 @@ fn try_ghostscript(path: &str, printer: Option<&str>, paper_size: PaperSize, job
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
 
+    info!("[GS CLI] args: {:?}", cmd.get_args().collect::<Vec<_>>());
     let output = cmd.output().with_context(|| format!("launch {}", exe.display()))?;
     // GS sometimes exits with e_Quit (-101) even after a successful print.
     // Treat 0 and -101 both as success.
     let code = output.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    info!("[GS CLI] exit code={code}");
+    if !stdout.trim().is_empty() { info!("[GS CLI] stdout: {}", stdout.trim()); }
+    if !stderr.trim().is_empty() { tracing::warn!("[GS CLI] stderr: {}", stderr.trim()); }
     if code != 0 && code != -101 {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("Ghostscript exited with {code}: {}", stderr.trim());
     }
-    info!("print job submitted via Ghostscript CLI for '{path}'");
+    info!("[GS CLI] print job submitted ok for '{path}'");
     Ok(true)
 }
 
