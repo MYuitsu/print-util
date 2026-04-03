@@ -199,7 +199,7 @@ async fn run_server(port: u16) -> Result<()> {
     let app = Router::new()
         .route("/health",    get(health))
         .route("/printers",  get(handle_printers))
-        .route("/print",     post(handle_print_a4))   // default A4
+        .route("/print",     post(handle_print_auto))  // auto-detect A4/A5 from PDF metadata
         .route("/print/a4",  post(handle_print_a4))
         .route("/print/a5",  post(handle_print_a5));
 
@@ -234,15 +234,19 @@ async fn handle_printers() -> Resp {
 ///   file    – PDF binary (required)
 ///   printer – printer name (optional, defaults to system default)
 ///   name    – print job name shown in spooler (optional, auto-generated if absent)
+async fn handle_print_auto(multipart: Multipart) -> Resp {
+    handle_print_with_size(multipart, None).await
+}
+
 async fn handle_print_a4(multipart: Multipart) -> Resp {
-    handle_print_with_size(multipart, PaperSize::A4).await
+    handle_print_with_size(multipart, Some(PaperSize::A4)).await
 }
 
 async fn handle_print_a5(multipart: Multipart) -> Resp {
-    handle_print_with_size(multipart, PaperSize::A5).await
+    handle_print_with_size(multipart, Some(PaperSize::A5)).await
 }
 
-async fn handle_print_with_size(mut multipart: Multipart, paper_size: PaperSize) -> Resp {
+async fn handle_print_with_size(mut multipart: Multipart, paper_size: Option<PaperSize>) -> Resp {
     let mut pdf_bytes: Option<Vec<u8>> = None;
     let mut printer: Option<String> = None;
     let mut job_name: Option<String> = None;
@@ -307,9 +311,81 @@ async fn handle_print_with_size(mut multipart: Multipart, paper_size: PaperSize)
     }
 }
 
+// ── PDF paper-size detection ─────────────────────────────────────────────────
+//
+// Scans the raw PDF bytes for the first /MediaBox entry and maps the
+// dimensions (in pt, 1 pt = 1/72 in) to A4 or A5.
+//   A4 : 595 × 842 pt  (±10 pt tolerance)
+//   A5 : 420 × 595 pt  (±10 pt tolerance)
+// Defaults to A4 when the size cannot be determined.
+
+fn detect_paper_size(data: &[u8]) -> PaperSize {
+    parse_media_box(data).unwrap_or(PaperSize::A4)
+}
+
+fn parse_media_box(data: &[u8]) -> Option<PaperSize> {
+    let needle = b"/MediaBox";
+    let mut i = 0;
+    while i + needle.len() < data.len() {
+        if data[i..].starts_with(needle) {
+            let after = &data[i + needle.len()..];
+            // Skip whitespace then expect '['
+            let after = skip_ws(after);
+            if after.first() != Some(&b'[') {
+                i += needle.len();
+                continue;
+            }
+            let inside = &after[1..];
+            if let Some(end) = inside.iter().position(|&b| b == b']') {
+                let box_str = std::str::from_utf8(&inside[..end]).ok()?;
+                let nums: Vec<f64> = box_str
+                    .split_whitespace()
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+                if nums.len() == 4 {
+                    let w = (nums[2] - nums[0]).abs();
+                    let h = (nums[3] - nums[1]).abs();
+                    if let Some(sz) = classify_paper(w, h) {
+                        return Some(sz);
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn skip_ws(data: &[u8]) -> &[u8] {
+    let n = data.iter().take_while(|&&b| b == b' ' || b == b'\t' || b == b'\r' || b == b'\n').count();
+    &data[n..]
+}
+
+fn classify_paper(w: f64, h: f64) -> Option<PaperSize> {
+    const TOL: f64 = 10.0;
+    let (short, long) = if w <= h { (w, h) } else { (h, w) };
+    if (short - 420.0).abs() < TOL && (long - 595.0).abs() < TOL {
+        return Some(PaperSize::A5);
+    }
+    if (short - 595.0).abs() < TOL && (long - 842.0).abs() < TOL {
+        return Some(PaperSize::A4);
+    }
+    None
+}
+
 // ── printing logic ───────────────────────────────────────────────────────────
 
-fn silent_print(data: &[u8], printer: Option<&str>, paper_size: PaperSize, job_name: &str) -> Result<()> {
+fn silent_print(data: &[u8], printer: Option<&str>, paper_size: Option<PaperSize>, job_name: &str) -> Result<()> {
+    // Resolve paper size: explicit override, or auto-detect from PDF MediaBox.
+    let paper_size = match paper_size {
+        Some(sz) => sz,
+        None => {
+            let sz = detect_paper_size(data);
+            info!("auto-detected paper size: {:?}", sz);
+            sz
+        }
+    };
+
     let tmp_dir = std::env::temp_dir().join("print-util");
     std::fs::create_dir_all(&tmp_dir).context("create temp dir")?;
 
