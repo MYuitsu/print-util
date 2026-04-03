@@ -7,7 +7,7 @@
 ; Output: installer\Output\print-util-x.x.x-setup.exe
 
 #define AppName      "print-util"
-#define AppVersion   "0.2.1"
+#define AppVersion   "0.2.2"
 #define AppPublisher "print-util contributors"
 #define AppURL       "https://github.com/MYuitsu/print-util"
 #define AppExe       "print-util.exe"

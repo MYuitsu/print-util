@@ -44,16 +44,36 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
-      # Download and bundle gsdll64.dll (Ghostscript AGPL, bundling allowed for OSS)
-      - name: Bundle Ghostscript DLL
+      # Resolve latest GS asset name/URL (used as cache key)
+      - name: Resolve Ghostscript asset
+        id: gs
         run: |
-          $rel  = Invoke-RestMethod "https://api.github.com/repos/ArtifexSoftware/ghostpdl-downloads/releases/latest"
+          $rel   = Invoke-RestMethod "https://api.github.com/repos/ArtifexSoftware/ghostpdl-downloads/releases/latest"
           $asset = $rel.assets | Where-Object { $_.name -match "w64\.exe$" } | Select-Object -First 1
-          Write-Host "Downloading $($asset.browser_download_url)"
-          Invoke-WebRequest $asset.browser_download_url -OutFile gs-setup.exe
-          Start-Process gs-setup.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
-          $dll = Get-ChildItem "C:\Program Files\gs" -Recurse -Filter "gsdll64.dll" | Select-Object -First 1
+          Write-Host "Found: $($asset.name)"
+          echo "url=$($asset.browser_download_url)" >> $env:GITHUB_OUTPUT
+          echo "filename=$($asset.name)"            >> $env:GITHUB_OUTPUT
+
+      # Cache the DLL so repeated builds skip the ~100 MB download
+      - name: Cache Ghostscript DLL
+        id: cache-gs
+        uses: actions/cache@v4
+        with:
+          path: installer/vendor/gsdll64.dll
+          key: gsdll64-${{ steps.gs.outputs.filename }}
+
+      # Download and bundle gsdll64.dll (Ghostscript AGPL, bundling allowed for OSS)
+      # Uses 7-zip (pre-installed on GitHub runners) to extract the DLL directly
+      # from the InnoSetup archive — never runs the installer, no CI hang.
+      - name: Bundle Ghostscript DLL
+        if: steps.cache-gs.outputs.cache-hit != 'true'
+        run: |
+          Write-Host "Downloading ${{ steps.gs.outputs.url }}"
+          Invoke-WebRequest "${{ steps.gs.outputs.url }}" -OutFile gs-setup.exe
+          & "C:\Program Files\7-Zip\7z.exe" e gs-setup.exe -ogs-extract -y
           New-Item -ItemType Directory -Force installer\vendor | Out-Null
+          $dll = Get-ChildItem gs-extract -Recurse -Filter "gsdll64.dll" | Select-Object -First 1
+          if (-not $dll) { throw "gsdll64.dll not found in extracted archive" }
           Copy-Item $dll.FullName installer\vendor\gsdll64.dll
           Write-Host "Staged $($dll.FullName)"
 
