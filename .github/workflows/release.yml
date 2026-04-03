@@ -62,6 +62,7 @@ jobs:
           path: |
             installer/vendor/gsdll64.dll
             installer/vendor/gswin64c.exe
+            installer/vendor/gs_lib
           key: gsdll64-${{ steps.gs.outputs.filename }}
 
       # Download and bundle gsdll64.dll (Ghostscript AGPL, bundling allowed for OSS)
@@ -84,7 +85,16 @@ jobs:
             Copy-Item $cli.FullName installer\vendor\gswin64c.exe
             Write-Host "Staged CLI: $($cli.FullName)"
           } else {
-            Write-Warning "gswin64c.exe not found in archive – DLL-only bundle"
+            Write-Warning "gswin64c.exe not found in archive - DLL-only bundle"
+          }
+          # Bundle gs lib/ (gs_init.ps, fonts, etc. needed by gswin64c.exe)
+          $libDir = Get-ChildItem gs-extract -Recurse -Filter "gs_init.ps" | Select-Object -First 1 | ForEach-Object { $_.Directory }
+          if ($libDir) {
+            New-Item -ItemType Directory -Force installer\vendor\gs_lib | Out-Null
+            Copy-Item "$($libDir.FullName)\*" installer\vendor\gs_lib\ -Recurse
+            Write-Host "Staged gs_lib from $($libDir.FullName)"
+          } else {
+            Write-Warning "gs_init.ps not found - gs_lib not staged"
           }
 
       - name: Build installer

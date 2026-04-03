@@ -792,24 +792,34 @@ fn ghostscript_candidates() -> Vec<std::path::PathBuf> {
 
 /// Find the GS `lib` directory that contains gs_init.ps and font resources.
 /// Searched paths (first match wins):
-///   a) <gs_exe_dir>/../lib           – works when exe is in bin/ inside a full install
-///   b) %ProgramFiles%\gs\<ver>\lib   – standard install
-///   c) %ProgramFiles(x86)%\gs\…
+///   a) <exe_dir>/gs_lib             – bundled by installer (preferred)
+///   b) <gs_exe_dir>/../lib           – works when exe is in bin/ inside a full install
+///   c) %ProgramFiles%\gs\<ver>\lib   – standard install
+///   d) %ProgramFiles(x86)%\gs\…
 #[cfg(windows)]
 fn find_gs_lib(gs_exe: &std::path::Path) -> Option<std::path::PathBuf> {
-    // a) sibling lib/ of the exe's parent (exe is in bin/, lib/ is next to bin/)
+    // a) bundled gs_lib/ next to the running print-util.exe
+    if let Ok(self_exe) = std::env::current_exe() {
+        let bundled = self_exe
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("gs_lib");
+        if bundled.join("gs_init.ps").is_file() {
+            return Some(bundled);
+        }
+    }
+    // b) sibling lib/ of the exe's parent (exe is in bin/, lib/ is next to bin/)
     if let Some(bin_dir) = gs_exe.parent() {
         let lib = bin_dir.parent().unwrap_or(bin_dir).join("lib");
         if lib.join("gs_init.ps").is_file() {
             return Some(lib);
         }
-        // also try same dir (bundled flat layout)
         let lib2 = bin_dir.join("lib");
         if lib2.join("gs_init.ps").is_file() {
             return Some(lib2);
         }
     }
-    // b/c) scan standard install dirs
+    // c/d) scan standard install dirs
     for pf in ["ProgramFiles", "ProgramFiles(x86)"] {
         if let Ok(root) = std::env::var(pf) {
             if let Ok(entries) = std::fs::read_dir(format!(r"{root}\gs")) {

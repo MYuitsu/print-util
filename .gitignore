@@ -10,6 +10,7 @@ gsdll32.dll
 vendor/gs/
 installer/vendor/*.dll
 installer/vendor/*.exe
+# gs_lib/ is intentionally tracked (resource files needed by gswin64c.exe)
 
 # Temp PDF files created at runtime
 *.pdf
