@@ -55,15 +55,14 @@ jobs:
           echo "sha256=$hash"  >> $env:GITHUB_OUTPUT
           echo "url=$url"      >> $env:GITHUB_OUTPUT
 
-      # winget-releaser auto-generates the manifest and opens a PR on
-      # microsoft/winget-pkgs. Requires a PAT with public_repo scope stored
-      # as secret WINGET_TOKEN (personal GitHub token, NOT GITHUB_TOKEN –
-      # the PR must come from a user account, not the Actions bot).
+      # wingetcreate is pre-installed on windows-latest runners.
+      # It forks microsoft/winget-pkgs and opens a PR automatically.
+      # Requires a classic PAT (NOT fine-grained) with public_repo scope
+      # stored as the WINGET_TOKEN repository secret.
       - name: Submit to winget-pkgs
-        uses: vedantmgoyal9/winget-releaser@v2
-        with:
-          identifier:         DMS-AI.PrintUtil
-          version:            ${{ steps.ver.outputs.version }}
-          release-tag:        ${{ steps.ver.outputs.tag }}
-          installers-regex:   print-util-.*-setup\.exe$
-          token:              ${{ secrets.WINGET_TOKEN }}
+        run: |
+          wingetcreate update DMS-AI.PrintUtil `
+            --version "${{ steps.ver.outputs.version }}" `
+            --urls    "${{ steps.sha.outputs.url }}" `
+            --token   "${{ secrets.WINGET_TOKEN }}" `
+            --submit
