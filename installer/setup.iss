@@ -11,6 +11,7 @@
 #define AppPublisher "print-util contributors"
 #define AppURL       "https://github.com/MYuitsu/print-util"
 #define AppExe       "print-util.exe"
+#define TrayExe      "print-util-tray.exe"
 #define ServiceName  "print-util"
 #define ServicePort  "17474"
 
@@ -32,7 +33,8 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-MinVersion=10.0
+; Windows 8+ (6.2) to keep compatibility for Win8/Win10 deployments
+MinVersion=6.2
 PrivilegesRequired=admin
 
 ; allow silent install: setup.exe /VERYSILENT /SUPPRESSMSGBOXES
@@ -44,6 +46,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 ; Main binary
 Source: "..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\{#TrayExe}"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Optional: bundle gsdll64.dll if present next to this script
 ; (Comment out if you don't bundle GS due to AGPL)
@@ -55,8 +58,14 @@ Source: "vendor\gs_lib\*"; DestDir: "{app}\gs_lib"; Flags: ignoreversion recurse
 ; SumatraPDF portable (primary print engine – single self-contained exe)
 Source: "vendor\SumatraPDF.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
+; VieNeu-TTS runtime assets
+Source: "vendor\tts\*"; DestDir: "{app}\tts"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+Source: "vendor\vnpt.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "vendor\onnxruntime.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\target\release\onnxruntime*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+
 [Icons]
-; No desktop/start menu shortcut needed for a background service
+Name: "{commonstartup}\VNPT Print Util"; Filename: "{app}\{#TrayExe}"; WorkingDir: "{app}"
 
 [Run]
 ; Register and start Windows service after install
@@ -71,6 +80,10 @@ Filename: "{sys}\sc.exe"; \
 Filename: "{sys}\sc.exe"; \
   Parameters: "start ""{#ServiceName}"""; \
   Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."
+
+Filename: "{app}\{#TrayExe}"; \
+  Description: "Run VNPT tray icon"; \
+  Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 ; Stop and remove service on uninstall

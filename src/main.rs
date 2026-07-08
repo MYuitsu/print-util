@@ -7,9 +7,12 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::io::Write;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{error, info};
 use uuid::Uuid;
+
+mod tts;
 
 // ── paper size ──────────────────────────────────────────────────────────────
 
@@ -21,13 +24,22 @@ enum PaperSize {
 
 impl PaperSize {
     fn gs_name(self) -> &'static str {
-        match self { PaperSize::A4 => "a4", PaperSize::A5 => "a5" }
+        match self {
+            PaperSize::A4 => "a4",
+            PaperSize::A5 => "a5",
+        }
     }
     fn sumatra_name(self) -> &'static str {
-        match self { PaperSize::A4 => "A4",  PaperSize::A5 => "A5" }
+        match self {
+            PaperSize::A4 => "A4",
+            PaperSize::A5 => "A5",
+        }
     }
     fn lp_media(self) -> &'static str {
-        match self { PaperSize::A4 => "a4",  PaperSize::A5 => "a5" }
+        match self {
+            PaperSize::A4 => "a4",
+            PaperSize::A5 => "a5",
+        }
     }
 }
 
@@ -51,6 +63,11 @@ fn internal(msg: impl ToString) -> Resp {
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({ "error": msg.to_string() })),
     )
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    pub tts: Arc<tts::TtsRuntime>,
 }
 
 // ── entry point ──────────────────────────────────────────────────────────────
@@ -122,23 +139,20 @@ fn run_service() -> Result<()> {
         _ => ServiceControlHandlerResult::NotImplemented,
     };
 
-    let status_handle =
-        service_control_handler::register("print-util", event_handler)
-            .context("register service control handler")?;
+    let status_handle = service_control_handler::register("print-util", event_handler)
+        .context("register service control handler")?;
 
-    use windows_service::service::{
-        ServiceState, ServiceStatus, ServiceType,
-    };
+    use windows_service::service::{ServiceState, ServiceStatus, ServiceType};
 
     // Report: starting
     status_handle.set_service_status(ServiceStatus {
-        service_type:             ServiceType::OWN_PROCESS,
-        current_state:            ServiceState::StartPending,
-        controls_accepted:        ServiceControlAccept::empty(),
-        exit_code:                windows_service::service::ServiceExitCode::Win32(0),
-        checkpoint:               0,
-        wait_hint:                Duration::from_secs(5),
-        process_id:               None,
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::StartPending,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: windows_service::service::ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: Duration::from_secs(5),
+        process_id: None,
     })?;
 
     // Start the async runtime in a background thread
@@ -155,13 +169,13 @@ fn run_service() -> Result<()> {
     // Report: running
     use windows_service::service::ServiceControlAccept;
     status_handle.set_service_status(ServiceStatus {
-        service_type:      ServiceType::OWN_PROCESS,
-        current_state:     ServiceState::Running,
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Running,
         controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
-        exit_code:         windows_service::service::ServiceExitCode::Win32(0),
-        checkpoint:        0,
-        wait_hint:         Duration::ZERO,
-        process_id:        None,
+        exit_code: windows_service::service::ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: Duration::ZERO,
+        process_id: None,
     })?;
 
     info!("print-util service running on port {port}");
@@ -172,13 +186,13 @@ fn run_service() -> Result<()> {
 
     // Report: stopped
     status_handle.set_service_status(ServiceStatus {
-        service_type:      ServiceType::OWN_PROCESS,
-        current_state:     ServiceState::Stopped,
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Stopped,
         controls_accepted: ServiceControlAccept::empty(),
-        exit_code:         windows_service::service::ServiceExitCode::Win32(0),
-        checkpoint:        0,
-        wait_hint:         Duration::ZERO,
-        process_id:        None,
+        exit_code: windows_service::service::ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: Duration::ZERO,
+        process_id: None,
     })?;
 
     Ok(())
@@ -228,8 +242,7 @@ fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
 
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::registry()
         .with(filter)
@@ -245,12 +258,8 @@ fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
 // ── shared server ────────────────────────────────────────────────────────────
 
 async fn run_server(port: u16) -> Result<()> {
-    let app = Router::new()
-        .route("/health",    get(health))
-        .route("/printers",  get(handle_printers))
-        .route("/print",     post(handle_print_auto))  // auto-detect A4/A5 from PDF metadata
-        .route("/print/a4",  post(handle_print_a4))
-        .route("/print/a5",  post(handle_print_a5));
+    let tts_runtime = Arc::new(tts::TtsRuntime::bootstrap().await);
+    let app = build_router(AppState { tts: tts_runtime });
 
     let addr = format!("127.0.0.1:{port}");
     let listener = TcpListener::bind(&addr)
@@ -260,6 +269,17 @@ async fn run_server(port: u16) -> Result<()> {
     info!("print-util listening on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+pub fn build_router(state: AppState) -> Router {
+    Router::<AppState>::new()
+        .route("/health", get(health))
+        .route("/printers", get(handle_printers))
+        .route("/print", post(handle_print_auto)) // auto-detect A4/A5 from PDF metadata
+        .route("/print/a4", post(handle_print_a4))
+        .route("/print/a5", post(handle_print_a5))
+        .merge(tts::routes())
+        .with_state(state)
 }
 
 /// GET /health
@@ -396,7 +416,12 @@ fn parse_media_box(data: &[u8]) -> Option<PaperSize> {
                 if nums.len() == 4 {
                     let w = (nums[2] - nums[0]).abs();
                     let h = (nums[3] - nums[1]).abs();
-                    info!("MediaBox raw=[{}] → w={:.1}pt h={:.1}pt", box_str.trim(), w, h);
+                    info!(
+                        "MediaBox raw=[{}] → w={:.1}pt h={:.1}pt",
+                        box_str.trim(),
+                        w,
+                        h
+                    );
                     if let Some(sz) = classify_paper(w, h) {
                         return Some(sz);
                     }
@@ -411,7 +436,10 @@ fn parse_media_box(data: &[u8]) -> Option<PaperSize> {
 }
 
 fn skip_ws(data: &[u8]) -> &[u8] {
-    let n = data.iter().take_while(|&&b| b == b' ' || b == b'\t' || b == b'\r' || b == b'\n').count();
+    let n = data
+        .iter()
+        .take_while(|&&b| b == b' ' || b == b'\t' || b == b'\r' || b == b'\n')
+        .count();
     &data[n..]
 }
 
@@ -430,9 +458,19 @@ fn classify_paper(w: f64, h: f64) -> Option<PaperSize> {
 
 // ── printing logic ───────────────────────────────────────────────────────────
 
-fn silent_print(data: &[u8], printer: Option<&str>, paper_size: Option<PaperSize>, job_name: &str) -> Result<()> {
-    info!("silent_print start: job='{}' printer={:?} size_override={:?} pdf_bytes={}",
-        job_name, printer, paper_size, data.len());
+fn silent_print(
+    data: &[u8],
+    printer: Option<&str>,
+    paper_size: Option<PaperSize>,
+    job_name: &str,
+) -> Result<()> {
+    info!(
+        "silent_print start: job='{}' printer={:?} size_override={:?} pdf_bytes={}",
+        job_name,
+        printer,
+        paper_size,
+        data.len()
+    );
 
     // Resolve paper size: explicit override, or auto-detect from PDF MediaBox.
     let paper_size = match paper_size {
@@ -454,7 +492,13 @@ fn silent_print(data: &[u8], printer: Option<&str>, paper_size: Option<PaperSize
     // Sanitize job name for use as filename: keep alphanumeric, space, dash, dot
     let safe_name: String = job_name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '.' || c == ' ' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '.' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let safe_name = safe_name.trim();
     let file_stem = if safe_name.is_empty() {
@@ -485,7 +529,10 @@ fn silent_print(data: &[u8], printer: Option<&str>, paper_size: Option<PaperSize
 
     #[cfg(windows)]
     {
-        info!("calling windows_print: path='{}' printer={:?} size={:?}", path_str, printer, paper_size);
+        info!(
+            "calling windows_print: path='{}' printer={:?} size={:?}",
+            path_str, printer, paper_size
+        );
         windows_print(path_str, printer, paper_size, job_name)?;
         info!("windows_print returned OK");
     }
@@ -506,28 +553,39 @@ fn silent_print(data: &[u8], printer: Option<&str>, paper_size: Option<PaperSize
 //   5. ShellExecuteW fallback  – works but Chrome/Edge can prompt a dialog
 
 #[cfg(windows)]
-fn windows_print(path: &str, printer: Option<&str>, paper_size: PaperSize, job_name: &str) -> Result<()> {
+fn windows_print(
+    path: &str,
+    printer: Option<&str>,
+    paper_size: PaperSize,
+    job_name: &str,
+) -> Result<()> {
     // Each engine returns Ok(true)=printed, Ok(false)=not installed, Err=found but failed.
     // On error we log a warning and try the next engine so that a single bad exit-code
     // never causes the user to retry (which would produce a duplicate print job).
     macro_rules! try_engine {
         ($call:expr, $name:literal) => {
             match $call {
-                Ok(true)  => return Ok(()),
+                Ok(true) => return Ok(()),
                 Ok(false) => {}
-                Err(e)    => tracing::warn!("{} failed, trying next engine: {:#}", $name, e),
+                Err(e) => tracing::warn!("{} failed, trying next engine: {:#}", $name, e),
             }
         };
     }
 
     info!("[engine] thử SumatraPDF...");
-    try_engine!(try_sumatrapdf(path, printer, paper_size),           "SumatraPDF");
+    try_engine!(try_sumatrapdf(path, printer, paper_size), "SumatraPDF");
     info!("[engine] thử Ghostscript CLI...");
-    try_engine!(try_ghostscript(path, printer, paper_size, job_name), "Ghostscript CLI");
+    try_engine!(
+        try_ghostscript(path, printer, paper_size, job_name),
+        "Ghostscript CLI"
+    );
     info!("[engine] thử Ghostscript DLL...");
-    try_engine!(try_ghostscript_dll(path, printer, paper_size, job_name), "Ghostscript DLL");
+    try_engine!(
+        try_ghostscript_dll(path, printer, paper_size, job_name),
+        "Ghostscript DLL"
+    );
     info!("[engine] thử Acrobat...");
-    try_engine!(try_acrobat(path, printer),                           "Acrobat");
+    try_engine!(try_acrobat(path, printer), "Acrobat");
     info!("[engine] fallback ShellExecuteW...");
     shell_execute_print(path, printer)
 }
@@ -559,10 +617,7 @@ fn sumatra_candidates() -> Vec<std::path::PathBuf> {
 
 #[cfg(windows)]
 fn try_sumatrapdf(path: &str, printer: Option<&str>, paper_size: PaperSize) -> Result<bool> {
-    let exe = match sumatra_candidates()
-        .into_iter()
-        .find(|p| is_executable(p))
-    {
+    let exe = match sumatra_candidates().into_iter().find(|p| is_executable(p)) {
         Some(e) => e,
         None => {
             info!("[SumatraPDF] không tìm thấy, bỏ qua");
@@ -573,13 +628,20 @@ fn try_sumatrapdf(path: &str, printer: Option<&str>, paper_size: PaperSize) -> R
 
     let mut cmd = std::process::Command::new(&exe);
     match printer {
-        Some(p) => { cmd.arg("-print-to").arg(p); }
-        None     => { cmd.arg("-print-to-default"); }
+        Some(p) => {
+            cmd.arg("-print-to").arg(p);
+        }
+        None => {
+            cmd.arg("-print-to-default");
+        }
     }
     cmd.arg("-print-settings")
-       .arg(format!("paper={}", paper_size.sumatra_name()));
+        .arg(format!("paper={}", paper_size.sumatra_name()));
     cmd.arg("-silent").arg(path);
-    info!("[SumatraPDF] args: {:?}", cmd.get_args().collect::<Vec<_>>());
+    info!(
+        "[SumatraPDF] args: {:?}",
+        cmd.get_args().collect::<Vec<_>>()
+    );
 
     // CREATE_NO_WINDOW so the process is completely invisible
     #[cfg(windows)]
@@ -588,7 +650,9 @@ fn try_sumatrapdf(path: &str, printer: Option<&str>, paper_size: PaperSize) -> R
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
 
-    let status = cmd.status().with_context(|| format!("launch {}", exe.display()))?;
+    let status = cmd
+        .status()
+        .with_context(|| format!("launch {}", exe.display()))?;
     anyhow::ensure!(status.success(), "SumatraPDF exited with {status}");
     info!("print job submitted via SumatraPDF for '{path}'");
     Ok(true)
@@ -638,7 +702,12 @@ fn find_gsdll() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(windows)]
-fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize, job_name: &str) -> Result<bool> {
+fn try_ghostscript_dll(
+    path: &str,
+    printer: Option<&str>,
+    paper_size: PaperSize,
+    job_name: &str,
+) -> Result<bool> {
     let dll_path = match find_gsdll() {
         Some(p) => p,
         None => {
@@ -649,11 +718,10 @@ fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize,
     info!("[GS DLL] dùng: {}", dll_path.display());
 
     // Find GS lib dir and build -I<lib> arg so GS can locate gs_init.ps
-    let gs_lib_arg: Option<String> = find_gs_lib(&dll_path)
-        .map(|lib| {
-            info!("[GS DLL] GS_LIB={}", lib.display());
-            format!("-I{}", lib.display())
-        });
+    let gs_lib_arg: Option<String> = find_gs_lib(&dll_path).map(|lib| {
+        info!("[GS DLL] GS_LIB={}", lib.display());
+        format!("-I{}", lib.display())
+    });
     if gs_lib_arg.is_none() {
         tracing::warn!("[GS DLL] GS_LIB không tìm thấy — có thể treo");
     }
@@ -671,7 +739,7 @@ fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize,
         "-dNOPAUSE".into(),
         "-dNOSAFER".into(),
         "-dNoCancel".into(),
-        "-dNOINTERACTIVE".into(),    // prevent any blocking prompt
+        "-dNOINTERACTIVE".into(), // prevent any blocking prompt
         "-dFIXEDMEDIA".into(),
         format!("-sPAPERSIZE={}", paper_size.gs_name()),
         "-q".into(),
@@ -701,15 +769,16 @@ fn try_ghostscript_dll(path: &str, printer: Option<&str>, paper_size: PaperSize,
             let lib = unsafe { Library::new(&dll_path) }
                 .with_context(|| format!("load {}", dll_path.display()))?;
 
-            type GsNew  = unsafe extern "C" fn(*mut *mut std::ffi::c_void, *mut std::ffi::c_void) -> i32;
+            type GsNew =
+                unsafe extern "C" fn(*mut *mut std::ffi::c_void, *mut std::ffi::c_void) -> i32;
             type GsInit = unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut *mut i8) -> i32;
             type GsExit = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
-            type GsDel  = unsafe extern "C" fn(*mut std::ffi::c_void);
+            type GsDel = unsafe extern "C" fn(*mut std::ffi::c_void);
 
-            let gs_new:  Symbol<GsNew>  = unsafe { lib.get(b"gsapi_new_instance\0") }?;
+            let gs_new: Symbol<GsNew> = unsafe { lib.get(b"gsapi_new_instance\0") }?;
             let gs_init: Symbol<GsInit> = unsafe { lib.get(b"gsapi_init_with_args\0") }?;
             let gs_exit: Symbol<GsExit> = unsafe { lib.get(b"gsapi_exit\0") }?;
-            let gs_del:  Symbol<GsDel>  = unsafe { lib.get(b"gsapi_delete_instance\0") }?;
+            let gs_del: Symbol<GsDel> = unsafe { lib.get(b"gsapi_delete_instance\0") }?;
 
             let args_c: Vec<CString> = args_strings
                 .iter()
@@ -836,7 +905,12 @@ fn find_gs_lib(gs_exe: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 #[cfg(windows)]
-fn try_ghostscript(path: &str, printer: Option<&str>, paper_size: PaperSize, job_name: &str) -> Result<bool> {
+fn try_ghostscript(
+    path: &str,
+    printer: Option<&str>,
+    paper_size: PaperSize,
+    job_name: &str,
+) -> Result<bool> {
     let exe = match ghostscript_candidates()
         .into_iter()
         .find(|p| is_executable(p))
@@ -850,7 +924,15 @@ fn try_ghostscript(path: &str, printer: Option<&str>, paper_size: PaperSize, job
     info!("[GS CLI] dùng: {}", exe.display());
 
     let mut cmd = std::process::Command::new(&exe);
-    cmd.args(["-dBATCH", "-dNOPAUSE", "-dNOSAFER", "-dNoCancel", "-dNOINTERACTIVE", "-dFIXEDMEDIA", "-q"]);
+    cmd.args([
+        "-dBATCH",
+        "-dNOPAUSE",
+        "-dNOSAFER",
+        "-dNoCancel",
+        "-dNOINTERACTIVE",
+        "-dFIXEDMEDIA",
+        "-q",
+    ]);
 
     // Pass GS_LIB so the bundled stub exe can find gs_init.ps and fonts.
     // Without this, gswin64c.exe hangs when it can't find its resource files.
@@ -858,7 +940,9 @@ fn try_ghostscript(path: &str, printer: Option<&str>, paper_size: PaperSize, job
         info!("[GS CLI] GS_LIB={}", lib.display());
         cmd.env("GS_LIB", &lib);
     } else {
-        tracing::warn!("[GS CLI] GS_LIB không tìm thấy — GS có thể treo nếu resource files không có");
+        tracing::warn!(
+            "[GS CLI] GS_LIB không tìm thấy — GS có thể treo nếu resource files không có"
+        );
     }
 
     cmd.arg(format!("-sPAPERSIZE={}", paper_size.gs_name()));
@@ -882,15 +966,21 @@ fn try_ghostscript(path: &str, printer: Option<&str>, paper_size: PaperSize, job
     }
 
     info!("[GS CLI] args: {:?}", cmd.get_args().collect::<Vec<_>>());
-    let output = cmd.output().with_context(|| format!("launch {}", exe.display()))?;
+    let output = cmd
+        .output()
+        .with_context(|| format!("launch {}", exe.display()))?;
     // GS sometimes exits with e_Quit (-101) even after a successful print.
     // Treat 0 and -101 both as success.
     let code = output.status.code().unwrap_or(-1);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     info!("[GS CLI] exit code={code}");
-    if !stdout.trim().is_empty() { info!("[GS CLI] stdout: {}", stdout.trim()); }
-    if !stderr.trim().is_empty() { tracing::warn!("[GS CLI] stderr: {}", stderr.trim()); }
+    if !stdout.trim().is_empty() {
+        info!("[GS CLI] stdout: {}", stdout.trim());
+    }
+    if !stderr.trim().is_empty() {
+        tracing::warn!("[GS CLI] stderr: {}", stderr.trim());
+    }
     if code != 0 && code != -101 {
         anyhow::bail!("Ghostscript exited with {code}: {}", stderr.trim());
     }
@@ -909,9 +999,7 @@ fn acrobat_candidates() -> Vec<std::path::PathBuf> {
     for pf in ["ProgramFiles", "ProgramFiles(x86)"] {
         if let Ok(root) = std::env::var(pf) {
             paths.push(format!(r"{root}\Adobe\Acrobat DC\Acrobat\Acrobat.exe").into());
-            paths.push(
-                format!(r"{root}\Adobe\Acrobat Reader DC\Reader\AcroRd32.exe").into(),
-            );
+            paths.push(format!(r"{root}\Adobe\Acrobat Reader DC\Reader\AcroRd32.exe").into());
             paths.push(format!(r"{root}\Adobe\Reader 11.0\Reader\AcroRd32.exe").into());
         }
     }
@@ -920,10 +1008,7 @@ fn acrobat_candidates() -> Vec<std::path::PathBuf> {
 
 #[cfg(windows)]
 fn try_acrobat(path: &str, printer: Option<&str>) -> Result<bool> {
-    let exe = match acrobat_candidates()
-        .into_iter()
-        .find(|p| is_executable(p))
-    {
+    let exe = match acrobat_candidates().into_iter().find(|p| is_executable(p)) {
         Some(e) => e,
         None => return Ok(false),
     };
@@ -941,7 +1026,9 @@ fn try_acrobat(path: &str, printer: Option<&str>) -> Result<bool> {
         cmd.creation_flags(0x0800_0000);
     }
 
-    let status = cmd.status().with_context(|| format!("launch {}", exe.display()))?;
+    let status = cmd
+        .status()
+        .with_context(|| format!("launch {}", exe.display()))?;
     anyhow::ensure!(status.success(), "Acrobat exited with {status}");
     info!("print job submitted via Acrobat for '{path}'");
     Ok(true)
@@ -953,10 +1040,10 @@ fn try_acrobat(path: &str, printer: Option<&str>) -> Result<bool> {
 fn shell_execute_print(path: &str, printer: Option<&str>) -> Result<()> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
-    use windows::core::PCWSTR;
 
     tracing::warn!(
         "SumatraPDF and Acrobat not found – falling back to ShellExecuteW. \
@@ -1024,22 +1111,26 @@ fn is_executable(p: &std::path::Path) -> bool {
 #[cfg(windows)]
 fn which_in_path(exe: &std::path::Path) -> bool {
     std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| dir.join(exe).is_file())
-        })
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(exe).is_file()))
         .unwrap_or(false)
 }
 
 // ── Unix fallback: lp(1) ─────────────────────────────────────────────────────
 
 #[cfg(not(windows))]
-fn unix_print(path: &str, printer: Option<&str>, paper_size: PaperSize, job_name: &str) -> Result<()> {
+fn unix_print(
+    path: &str,
+    printer: Option<&str>,
+    paper_size: PaperSize,
+    job_name: &str,
+) -> Result<()> {
     let mut cmd = std::process::Command::new("lp");
     if let Some(p) = printer {
         cmd.arg("-d").arg(p);
     }
     cmd.arg("-t").arg(job_name);
-    cmd.arg("-o").arg(format!("media={}", paper_size.lp_media()));
+    cmd.arg("-o")
+        .arg(format!("media={}", paper_size.lp_media()));
     let status = cmd.arg(path).status().context("spawn lp")?;
     anyhow::ensure!(status.success(), "lp exited with {status}");
     info!("print job submitted for '{path}'");
@@ -1050,10 +1141,10 @@ fn unix_print(path: &str, printer: Option<&str>, paper_size: PaperSize, job_name
 
 #[cfg(windows)]
 fn list_printers() -> Result<Value> {
-    use windows::Win32::Graphics::Printing::{
-        EnumPrintersW, PRINTER_ENUM_LOCAL, PRINTER_ENUM_CONNECTIONS, PRINTER_INFO_4W,
-    };
     use windows::core::PWSTR;
+    use windows::Win32::Graphics::Printing::{
+        EnumPrintersW, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL, PRINTER_INFO_4W,
+    };
 
     let flags = PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS;
     let level = 4u32;
@@ -1079,7 +1170,9 @@ fn list_printers() -> Result<Value> {
             &mut needed,
             &mut count,
         )
-    }.ok().context("EnumPrintersW")?;
+    }
+    .ok()
+    .context("EnumPrintersW")?;
 
     let infos = unsafe {
         std::slice::from_raw_parts(buf.as_ptr() as *const PRINTER_INFO_4W, count as usize)
@@ -1098,11 +1191,15 @@ fn list_printers() -> Result<Value> {
 
 #[cfg(windows)]
 fn get_default_printer() -> Option<String> {
-    use windows::Win32::Graphics::Printing::GetDefaultPrinterW;
     use windows::core::PWSTR;
+    use windows::Win32::Graphics::Printing::GetDefaultPrinterW;
     let mut size: u32 = 0;
-    unsafe { let _ = GetDefaultPrinterW(PWSTR::null(), &mut size); }
-    if size == 0 { return None; }
+    unsafe {
+        let _ = GetDefaultPrinterW(PWSTR::null(), &mut size);
+    }
+    if size == 0 {
+        return None;
+    }
     let mut buf: Vec<u16> = vec![0u16; size as usize];
     let ok = unsafe { GetDefaultPrinterW(PWSTR(buf.as_mut_ptr()), &mut size) };
     if ok.as_bool() {
@@ -1125,4 +1222,78 @@ fn list_printers() -> Result<Value> {
         Err(_) => vec![],
     };
     Ok(json!({ "default": null, "printers": names }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    fn empty_multipart_body() -> (String, Vec<u8>) {
+        let boundary = "----printutilboundary";
+        let body = format!("--{boundary}--\r\n").into_bytes();
+        (boundary.to_string(), body)
+    }
+
+    async fn test_app() -> Router {
+        let runtime = Arc::new(tts::TtsRuntime::bootstrap_for_tests().await);
+        build_router(AppState { tts: runtime })
+    }
+
+    #[tokio::test]
+    async fn health_route_still_works() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .method("GET")
+                    .body(Body::empty())
+                    .expect("health req"),
+            )
+            .await
+            .expect("health resp");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn printers_route_still_works() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/printers")
+                    .method("GET")
+                    .body(Body::empty())
+                    .expect("printers req"),
+            )
+            .await
+            .expect("printers resp");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn print_routes_still_validate_file_field() {
+        let app = test_app().await;
+        let (boundary, body) = empty_multipart_body();
+        for route in ["/print", "/print/a4", "/print/a5"] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(route)
+                        .method("POST")
+                        .header(
+                            "content-type",
+                            format!("multipart/form-data; boundary={boundary}"),
+                        )
+                        .body(Body::from(body.clone()))
+                        .expect("print req"),
+                )
+                .await
+                .expect("print resp");
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        }
+    }
 }

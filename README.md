@@ -23,6 +23,7 @@ Tải file `print-util-x.x.x-setup.exe` từ [Releases](../../releases) và ch�
 Installer sẽ:
 - Cài binary vào `%ProgramFiles%\print-util\`
 - Đăng ký và khởi động **Windows Service** tự động (start cùng Windows)
+- Cài `print-util-tray.exe` và tự chạy icon khay hệ thống (startup user session)
 - Tạo uninstaller trong Control Panel
 
 ### Build từ source
@@ -34,6 +35,8 @@ cargo build --release
 ```
 
 Binary đầu ra: `target\release\print-util.exe`
+
+Tray companion: `target\release\print-util-tray.exe`
 
 ### Build installer locally
 
@@ -54,6 +57,17 @@ Copy-Item "C:\Program Files\gs\gs10.04.0\bin\gsdll64.dll" installer\vendor\
 ```
 
 > **Lưu ý license:** `gsdll64.dll` là AGPL-3.0. Không commit file này vào repo.
+
+### Tray icon VNPT (tuỳ chọn)
+
+Nếu muốn icon khay đúng branding VNPT, đặt file `vnpt.ico` cạnh `print-util-tray.exe`
+hoặc tại `%ProgramFiles%\print-util\vnpt.ico`.
+Nếu không có file này, app sẽ dùng icon mặc định của Windows.
+
+Menu tray:
+- `Download app`: mở trang release
+- `Tai TTS`: tải model TTS vào `%LOCALAPPDATA%\print-util\tts` (không cần quyền admin)
+- `Cau hinh`: mở file `%ProgramData%\print-util\config.json`
 
 ## Chạy server
 
@@ -83,9 +97,39 @@ Kiểm tra server đang chạy.
 
 ---
 
+### `GET /printers`
+
+Lấy danh sách máy in khả dụng và máy in mặc định.
+
+**Response:**
+```json
+{
+  "default": "HP LaserJet Pro",
+  "printers": ["HP LaserJet Pro", "Microsoft Print to PDF"]
+}
+```
+
+---
+
 ### `POST /print`
 
-In một file PDF.
+In file PDF với khổ giấy tự nhận diện từ `MediaBox` (A4/A5). Nếu không nhận diện được thì mặc định A4.
+
+---
+
+### `POST /print/a4`
+
+In file PDF và ép khổ giấy A4.
+
+---
+
+### `POST /print/a5`
+
+In file PDF và ép khổ giấy A5.
+
+---
+
+Các endpoint `POST /print*` dùng chung request/response dưới đây.
 
 **Request:** `multipart/form-data`
 
@@ -93,6 +137,7 @@ In một file PDF.
 |-------|----------|-------|
 | `file` | ✓ | Nội dung file PDF |
 | `printer` | — | Tên máy in. Bỏ trống = dùng máy in mặc định |
+| `name` | — | Tên print job hiển thị ở spooler. Bỏ trống = tự sinh `doc-<unix_timestamp>` |
 
 **Response thành công:**
 ```json
@@ -108,8 +153,13 @@ In một file PDF.
 | Code | Ý nghĩa |
 |------|---------|
 | 200 | In thành công |
-| 400 | Thiếu field hoặc dữ liệu không hợp lệ |
-| 500 | Lỗi khi gửi lệnh in |
+| 400 | Multipart lỗi hoặc thiếu field `file` |
+| 500 | Lỗi engine in, lỗi nội bộ, hoặc timeout |
+
+**Timeout:** server timeout sau `120s` cho mỗi job in và trả:
+```json
+{ "error": "print timed out after 120 s" }
+```
 
 ## Ví dụ
 

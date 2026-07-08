@@ -40,6 +40,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force target\release | Out-Null
           Copy-Item target\x86_64-pc-windows-msvc\release\print-util.exe target\release\print-util.exe
+          Copy-Item target\x86_64-pc-windows-msvc\release\print-util-tray.exe target\release\print-util-tray.exe
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -112,6 +113,63 @@ jobs:
           New-Item -ItemType Directory -Force installer\vendor | Out-Null
           Invoke-WebRequest $url -OutFile installer\vendor\SumatraPDF.exe -Headers @{"User-Agent"="print-util-ci"}
           Write-Host "Staged SumatraPDF: $((Get-Item installer\vendor\SumatraPDF.exe).Length) bytes"
+
+      - name: Cache ONNX Runtime DLL
+        id: cache-onnxruntime
+        uses: actions/cache@v4
+        with:
+          path: installer/vendor/onnxruntime.dll
+          key: onnxruntime-win-x64-1.24.0
+
+      - name: Bundle ONNX Runtime DLL
+        if: steps.cache-onnxruntime.outputs.cache-hit != 'true'
+        run: |
+          New-Item -ItemType Directory -Force installer\vendor | Out-Null
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v1.24.0/onnxruntime-win-x64-1.24.0.zip"
+          Invoke-WebRequest $url -OutFile onnxruntime.zip -Headers @{"User-Agent"="print-util-ci"}
+          Expand-Archive onnxruntime.zip -DestinationPath onnxruntime-extract -Force
+          $dll = Get-ChildItem onnxruntime-extract -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
+          if (-not $dll) { throw "onnxruntime.dll not found in archive" }
+          Copy-Item $dll.FullName installer\vendor\onnxruntime.dll
+          Write-Host "Staged ONNX Runtime: $($dll.FullName)"
+
+      - name: Cache VieNeu-TTS assets
+        id: cache-tts
+        uses: actions/cache@v4
+        with:
+          path: installer/vendor/tts
+          key: vieneu-tts-v2-turbo-gguf-int8-20260420
+
+      - name: Bundle VieNeu-TTS assets
+        if: steps.cache-tts.outputs.cache-hit != 'true'
+        run: |
+          New-Item -ItemType Directory -Force installer\vendor\tts | Out-Null
+          $headers = @{ "User-Agent" = "print-util-ci" }
+
+          function Download-Asset([string]$Url, [string]$OutFile) {
+            Write-Host "Downloading $Url"
+            Invoke-WebRequest $Url -OutFile $OutFile -Headers $headers
+            Write-Host "Staged $OutFile ($((Get-Item $OutFile).Length) bytes)"
+          }
+
+          Download-Asset "https://huggingface.co/pnnbao-ump/VieNeu-TTS-v2-Turbo-GGUF/resolve/main/vieneu-tts-v2-turbo.gguf" "installer\vendor\tts\vieneu-tts-v2-turbo.gguf"
+          Download-Asset "https://huggingface.co/pnnbao-ump/VieNeu-Codec/resolve/main/vieneu_decoder_int8.onnx" "installer\vendor\tts\vieneu_decoder_int8.onnx"
+          Download-Asset "https://huggingface.co/pnnbao-ump/VieNeu-Codec/resolve/main/vieneu_encoder.onnx" "installer\vendor\tts\vieneu_encoder.onnx"
+          Download-Asset "https://huggingface.co/pnnbao-ump/VieNeu-TTS-v2-Turbo-GGUF/resolve/main/voices.json" "installer\vendor\tts\voices.base.json"
+          Download-Asset "https://raw.githubusercontent.com/pnnbao97/sea-g2p/main/python/sea_g2p/sea_g2p.bin" "installer\vendor\tts\sea_g2p.bin"
+
+      - name: Stage ONNX Runtime DLL
+        run: |
+          New-Item -ItemType Directory -Force target\release | Out-Null
+          if (Test-Path installer\vendor\onnxruntime.dll) {
+            Copy-Item installer\vendor\onnxruntime.dll target\release\onnxruntime.dll -Force
+            Write-Host "Staged ONNX Runtime DLL from vendor cache"
+          } else {
+            $built = Get-ChildItem target\x86_64-pc-windows-msvc\release -Filter "onnxruntime*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $built) { throw "onnxruntime.dll is missing and no fallback DLL found" }
+            Copy-Item $built.FullName target\release\$($built.Name) -Force
+            Write-Host "Staged ONNX Runtime DLL from build output: $($built.Name)"
+          }
 
       - name: Build installer
         run: iscc installer\setup.iss
