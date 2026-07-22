@@ -10,6 +10,7 @@ mod win_tray {
     use anyhow::{Context, Result};
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::process::CommandExt;
     use std::path::PathBuf;
     use std::process::Command;
     use windows::core::{w, PCWSTR};
@@ -24,11 +25,10 @@ mod win_tray {
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
         DispatchMessageW, GetCursorPos, GetMessageW, LoadIconW, MessageBoxW, PostQuitMessage,
         RegisterClassW, SetForegroundWindow, TrackPopupMenu, TranslateMessage, HICON, HMENU,
-        IDC_ARROW, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE,
-        MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MF_SEPARATOR,
-        MF_STRING, MSG, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP,
-        WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
-        WNDCLASSW, WS_OVERLAPPED, HWND_MESSAGE,
+        HWND_MESSAGE, IDC_ARROW, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE,
+        MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MF_SEPARATOR, MF_STRING, MSG, SW_SHOWNORMAL,
+        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_CONTEXTMENU,
+        WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
     };
 
     const APP_NAME: &str = "VNPT Print Util";
@@ -39,9 +39,21 @@ mod win_tray {
     const MENU_CONFIG: u16 = 1002;
     const MENU_RESTART_SERVICE: u16 = 1003;
     const MENU_EXIT: u16 = 1099;
+    const ERROR_INSUFFICIENT_BUFFER: i32 = 122;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentPackageFullName(
+            package_full_name_length: *mut u32,
+            package_full_name: *mut u16,
+        ) -> i32;
+    }
 
     pub fn run() -> Result<()> {
         detach_from_console();
+        if is_msix_mode() {
+            start_packaged_server()?;
+        }
 
         let instance = unsafe { GetModuleHandleW(PCWSTR::null()) }.context("GetModuleHandleW")?;
         let hinstance = HINSTANCE(instance.0);
@@ -98,6 +110,30 @@ mod win_tray {
         if has_console {
             let _ = unsafe { FreeConsole() };
         }
+    }
+
+    fn is_msix_mode() -> bool {
+        if std::env::args().any(|arg| arg == "--msix") {
+            return true;
+        }
+
+        let mut package_name_length = 0;
+        let result =
+            unsafe { GetCurrentPackageFullName(&mut package_name_length, std::ptr::null_mut()) };
+        result == ERROR_INSUFFICIENT_BUFFER
+    }
+
+    fn start_packaged_server() -> Result<()> {
+        let exe_dir = std::env::current_exe()?
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("cannot resolve package directory"))?
+            .to_path_buf();
+        Command::new(exe_dir.join("print-util.exe"))
+            .arg("--console")
+            .creation_flags(0x08000000)
+            .spawn()
+            .context("start packaged print server")?;
+        Ok(())
     }
 
     unsafe extern "system" fn wnd_proc(
@@ -306,6 +342,11 @@ mod win_tray {
     }
 
     fn restart_service_with_feedback() -> Result<()> {
+        if is_msix_mode() {
+            start_packaged_server()?;
+            show_info_message("Đã khởi động lại print-util.");
+            return Ok(());
+        }
         match restart_print_service() {
             Ok(_) => {
                 show_info_message("Đã khởi động lại dịch vụ 'print-util' thành công.");
@@ -374,10 +415,16 @@ exit $p.ExitCode"
     }
 
     fn ensure_config_file() -> Result<PathBuf> {
-        let config_dir = std::env::var("ProgramData")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(r"C:\ProgramData"))
-            .join("print-util");
+        let base_dir = if is_msix_mode() {
+            std::env::var("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(r"C:\Users\Public\AppData\Local"))
+        } else {
+            std::env::var("ProgramData")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(r"C:\ProgramData"))
+        };
+        let config_dir = base_dir.join("print-util");
         std::fs::create_dir_all(&config_dir).context("create config dir")?;
 
         let config_path = config_dir.join("config.json");

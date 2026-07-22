@@ -23,6 +23,10 @@ temp/
 *.suo
 *.user
 
+# MSIX build output
+msix/stage/
+msix/Output/
+
 # OS
 Thumbs.db
 Desktop.ini

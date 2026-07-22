@@ -16,19 +16,15 @@ Local HTTP server nhận file PDF qua API và in **ngầm** (silent) — không 
 
 ## Cài đặt
 
-### Dùng installer (khuyến nghị)
+### Cài bằng MSIX (khuyến nghị)
 
-Tải file `print-util-x.x.x-setup.exe` từ [Releases](../../releases) và chạy.
+Tải file `print-util-x.x.x.msix` từ [Releases](../../releases) và mở bằng Windows App Installer.
 
 Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate
 by [SignPath Foundation](https://signpath.org/). See the
 [Code signing policy](CODE_SIGNING_POLICY.md).
 
-Installer sẽ:
-- Cài binary vào `%ProgramFiles%\print-util\`
-- Đăng ký và khởi động **Windows Service** tự động (start cùng Windows)
-- Cài `print-util-tray.exe` và tự chạy icon khay hệ thống (startup user session)
-- Tạo uninstaller trong Control Panel
+MSIX cài theo user, đăng ký tray startup task và chạy local print server trong phiên đăng nhập của user. Gỡ cài đặt tại **Settings > Apps > Installed apps**.
 
 ### Build từ source
 
@@ -42,17 +38,30 @@ Binary đầu ra: `target\release\print-util.exe`
 
 Tray companion: `target\release\print-util-tray.exe`
 
-### Build installer locally
+### Build MSIX
 
-Yêu cầu: [Inno Setup 6](https://jrsoftware.org/isdl.php)
+MSIX chạy tray companion bằng packaged startup task. Tray tự nhận diện package và
+khởi động `print-util.exe --console` cho user đang đăng nhập; không cài Windows Service.
+
+Requirements: Windows 10/11 SDK (`makeappx.exe`) and a signing certificate whose
+subject matches the `Publisher` in `msix/AppxManifest.xml`.
 
 ```powershell
-cargo build --release
-iscc installer\setup.iss
-# Output: installer\Output\print-util-0.3.0-setup.exe
+cargo build --release --target x86_64-pc-windows-msvc
+
+.\scripts\build-msix.ps1 `
+  -Version 0.3.0 `
+  -Publisher "CN=YOUR_CERTIFICATE_SUBJECT" `
+  -OutputPath .\msix\Output\print-util-0.3.0.msix
 ```
 
-Ghostscript và SumatraPDF được đóng gói trong installer. Build sẽ báo lỗi nếu thiếu
+Sign the resulting MSIX with `signtool.exe` before installing or submitting it.
+
+GitHub Release dùng MSIX làm artifact duy nhất. Đặt repository variables
+`MSIX_PACKAGE_NAME` và `MSIX_PUBLISHER_DISPLAY_NAME` theo các giá trị trong
+Partner Center trước khi tạo tag phát hành.
+
+Ghostscript và SumatraPDF được đóng gói trong MSIX. Build sẽ báo lỗi nếu thiếu
 engine hoặc resource cần thiết.
 
 > **Lưu ý license:** Ghostscript là AGPL-3.0; cần giữ thông tin license khi phân phối.
@@ -229,7 +238,7 @@ Get-Printer | Select-Object Name, Default
 
 ## Code signing policy
 
-Release installers are distributed via **Windows Package Manager (winget)** and validated by Microsoft — no SmartScreen warning for users.
+Signed MSIX packages are distributed via **Windows Package Manager (winget)** and Microsoft Store.
 
 See [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md) for signing details and
 [STORE_SUBMISSION.md](STORE_SUBMISSION.md) for the Microsoft Store release checklist.

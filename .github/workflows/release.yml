@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    name: Build installer (Windows x64)
+    name: Build MSIX (Windows x64)
     runs-on: windows-latest
 
     steps:
@@ -34,16 +34,6 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --target x86_64-pc-windows-msvc
-
-      # Copy binary to expected location for Inno Setup
-      - name: Stage binary
-        run: |
-          New-Item -ItemType Directory -Force target\release | Out-Null
-          Copy-Item target\x86_64-pc-windows-msvc\release\print-util.exe target\release\print-util.exe
-          Copy-Item target\x86_64-pc-windows-msvc\release\print-util-tray.exe target\release\print-util-tray.exe
-
-      - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
 
       # Resolve latest GS asset name/URL (used as cache key)
       - name: Resolve Ghostscript asset
@@ -158,14 +148,14 @@ jobs:
           .\scripts\sign-release.ps1 `
             -CertificateThumbprint "${{ steps.signing.outputs.thumbprint }}" `
             -Path @(
-              "target\release\print-util.exe",
-              "target\release\print-util-tray.exe",
+              "target\x86_64-pc-windows-msvc\release\print-util.exe",
+              "target\x86_64-pc-windows-msvc\release\print-util-tray.exe",
               "installer\vendor\SumatraPDF.exe",
               "installer\vendor\gswin64c.exe",
               "installer\vendor\gsdll64.dll"
             )
 
-      - name: Build signed installer
+      - name: Build and sign MSIX package
         run: |
           $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
             -Filter signtool.exe -Recurse |
@@ -174,26 +164,35 @@ jobs:
             Select-Object -First 1
           if (-not $signTool) { throw "signtool.exe was not found" }
 
-          $thumbprint = "${{ steps.signing.outputs.thumbprint }}"
-          $signCommand = '"' + $signTool.FullName + '" sign /sha1 ' + $thumbprint + `
-            ' /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com $f'
-          & iscc "/DSTORE_SIGNING=1" "/Sstore=$signCommand" installer\setup.iss
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
-
-          $installer = Get-ChildItem installer\Output\print-util-*-setup.exe | Select-Object -First 1
-          .\scripts\sign-release.ps1 `
-            -CertificateThumbprint $thumbprint `
-            -Path $installer.FullName
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          $certificate = Get-Item "Cert:\CurrentUser\My\${{ steps.signing.outputs.thumbprint }}"
+          $packageName = "${{ vars.MSIX_PACKAGE_NAME }}"
+          if ([string]::IsNullOrWhiteSpace($packageName)) { $packageName = "MYuitsu.PrintUtil" }
+          $publisherDisplayName = "${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}"
+          if ([string]::IsNullOrWhiteSpace($publisherDisplayName)) {
+            $publisherDisplayName = $certificate.Subject -replace '^CN=', ''
+          }
+          .\scripts\build-msix.ps1 `
+            -Version $version `
+            -Publisher $certificate.Subject `
+            -PackageName $packageName `
+            -PublisherDisplayName $publisherDisplayName `
+            -OutputPath "msix\Output\print-util-$version.msix"
+          & $signTool.FullName sign /sha1 "${{ steps.signing.outputs.thumbprint }}" `
+            /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
+            "msix\Output\print-util-$version.msix"
+          if ($LASTEXITCODE -ne 0) { throw "MSIX signing failed with exit code $LASTEXITCODE" }
+          & $signTool.FullName verify /pa "msix\Output\print-util-$version.msix"
+          if ($LASTEXITCODE -ne 0) { throw "MSIX signature verification failed" }
 
           .\scripts\test-store-readiness.ps1 `
-            -InstallerPath $installer.FullName `
-            -RequireInstaller
+            -MsixPath "msix\Output\print-util-$version.msix"
 
       - name: Generate checksum
         run: |
-          $file = Get-ChildItem installer\Output\*.exe | Select-Object -First 1
+          $file = Get-ChildItem msix\Output\*.msix | Select-Object -First 1
           $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower()
-          "$hash  $($file.Name)" | Out-File -Encoding ascii installer\Output\SHA256SUMS.txt
+          "$hash  $($file.Name)" | Out-File -Encoding ascii msix\Output\SHA256SUMS.txt
           Write-Host "SHA256: $hash  $($file.Name)"
 
       - name: Remove signing certificate
@@ -210,9 +209,11 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           body: |
+            Download the signed MSIX package and install it with Windows App Installer.
+
             Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
             See the [code signing policy](https://github.com/${{ github.repository }}/blob/main/CODE_SIGNING_POLICY.md).
           files: |
-            installer/Output/print-util-*.exe
-            installer/Output/SHA256SUMS.txt
+            msix/Output/print-util-*.msix
+            msix/Output/SHA256SUMS.txt

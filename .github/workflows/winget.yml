@@ -38,19 +38,19 @@ jobs:
           echo "version=$v" >> $env:GITHUB_OUTPUT
           echo "tag=v$v"    >> $env:GITHUB_OUTPUT
 
-      - name: Download installer and get SHA256
+      - name: Download MSIX and get SHA256
         id: sha
         run: |
           $version = "${{ steps.ver.outputs.version }}"
           $tag     = "${{ steps.ver.outputs.tag }}"
           $owner   = "${{ github.repository_owner }}"
           $repo    = "${{ github.event.repository.name }}"
-          $url     = "https://github.com/$owner/$repo/releases/download/$tag/print-util-$version-setup.exe"
+          $url     = "https://github.com/$owner/$repo/releases/download/$tag/print-util-$version.msix"
 
           Write-Host "Downloading $url"
-          Invoke-WebRequest -Uri $url -OutFile setup.exe
+          Invoke-WebRequest -Uri $url -OutFile print-util.msix
 
-          $hash = (Get-FileHash setup.exe -Algorithm SHA256).Hash.ToLower()
+          $hash = (Get-FileHash print-util.msix -Algorithm SHA256).Hash.ToLower()
           Write-Host "SHA256: $hash"
           echo "sha256=$hash"  >> $env:GITHUB_OUTPUT
           echo "url=$url"      >> $env:GITHUB_OUTPUT

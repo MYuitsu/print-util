@@ -70,8 +70,8 @@ fn internal(msg: impl ToString) -> Resp {
 
 fn resolve_port() -> u16 {
     std::env::args()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
+        .skip(1)
+        .find_map(|s| s.parse().ok())
         .or_else(|| std::env::var("PORT").ok().and_then(|s| s.parse().ok()))
         .unwrap_or(17474)
 }
@@ -79,10 +79,11 @@ fn resolve_port() -> u16 {
 fn main() -> Result<()> {
     #[cfg(windows)]
     {
+        let force_console = std::env::args().any(|arg| arg == "--console");
         // Nếu process được SCM gọi, nó sẽ không có console → chạy service mode.
         // Nếu có console (chạy tay) thì chạy thẳng console mode.
         use windows_service::service_dispatcher;
-        if !is_interactive() {
+        if !force_console && !is_interactive() {
             service_dispatcher::start("print-util", ffi_service_main)
                 .context("service_dispatcher::start")?;
             return Ok(());
