@@ -13,8 +13,8 @@ InstallModes:
   - silent
   - silentWithProgress
 InstallerSwitches:
-  Silent: /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-  SilentWithProgress: /SILENT /SUPPRESSMSGBOXES /NORESTART
+  Silent: /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+  SilentWithProgress: /SILENT /SUPPRESSMSGBOXES /NORESTART /SP-
   Log: /LOG="$TEMP\\print-util-install.log"
 UpgradeBehavior: installer
 Installers:

@@ -4,12 +4,14 @@
 ; Build command (from repo root, after `cargo build --release`):
 ;   iscc installer\setup.iss
 ;
-; Output: installer\Output\print-util-x.x.x-setup.exe
+; Output: installer\Output\print-util-0.3.0-setup.exe
+
+#include "store-config.iss"
 
 #define AppName      "print-util"
 #define AppVersion   "0.3.0"
-#define AppPublisher "print-util contributors"
-#define AppURL       "https://github.com/MYuitsu/print-util"
+#define AppPublisher StorePublisher
+#define AppURL       StoreProjectURL
 #define AppExe       "print-util.exe"
 #define TrayExe      "print-util-tray.exe"
 #define ServiceName  "print-util"
@@ -21,7 +23,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
-AppSupportURL={#AppURL}/issues
+AppSupportURL={#StoreSupportURL}
 AppUpdatesURL={#AppURL}/releases
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
@@ -37,7 +39,12 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=6.2
 PrivilegesRequired=admin
 
-; allow silent install: setup.exe /VERYSILENT /SUPPRESSMSGBOXES
+#ifdef STORE_SIGNING
+SignTool=store
+SignedUninstaller=yes
+#endif
+
+; allow silent install: setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
 SetupLogging=yes
 
 [Languages]
@@ -48,21 +55,16 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\{#TrayExe}"; DestDir: "{app}"; Flags: ignoreversion
 
-; Optional: bundle gsdll64.dll if present next to this script
-; (Comment out if you don't bundle GS due to AGPL)
-Source: "vendor\gsdll64.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "vendor\gswin64c.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; Bundled Ghostscript engines (required for offline printing fallback)
+Source: "vendor\gsdll64.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "vendor\gswin64c.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; GS resource files (gs_init.ps, fonts, etc.) required by gswin64c.exe
-Source: "vendor\gs_lib\*"; DestDir: "{app}\gs_lib"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+Source: "vendor\gs_lib\*"; DestDir: "{app}\gs_lib"; Flags: ignoreversion recursesubdirs
 
-; SumatraPDF portable (primary print engine – single self-contained exe)
-Source: "vendor\SumatraPDF.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; SumatraPDF portable (primary print engine – required, single self-contained exe)
+Source: "vendor\SumatraPDF.exe"; DestDir: "{app}"; Flags: ignoreversion
 
-; VieNeu-TTS runtime assets
-Source: "vendor\tts\*"; DestDir: "{app}\tts"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
 Source: "vendor\vnpt.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "vendor\onnxruntime.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "..\target\release\onnxruntime*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{commonstartup}\VNPT Print Util"; Filename: "{app}\{#TrayExe}"; WorkingDir: "{app}"
@@ -87,8 +89,8 @@ Filename: "{app}\{#TrayExe}"; \
 
 [UninstallRun]
 ; Stop and remove service on uninstall
-Filename: "{sys}\sc.exe"; Parameters: "stop ""{#ServiceName}""";  Flags: runhidden waituntilterminated
-Filename: "{sys}\sc.exe"; Parameters: "delete ""{#ServiceName}"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\sc.exe"; Parameters: "stop ""{#ServiceName}""";  Flags: runhidden waituntilterminated; RunOnceId: "StopPrintUtilService"
+Filename: "{sys}\sc.exe"; Parameters: "delete ""{#ServiceName}"""; Flags: runhidden waituntilterminated; RunOnceId: "DeletePrintUtilService"
 
 [Code]
 // On upgrade: stop and delete old service so sc.exe create in [Run] succeeds.

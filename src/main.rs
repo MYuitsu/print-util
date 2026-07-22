@@ -7,12 +7,9 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::io::Write;
-use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{error, info};
 use uuid::Uuid;
-
-mod tts;
 
 // ── paper size ──────────────────────────────────────────────────────────────
 
@@ -63,11 +60,6 @@ fn internal(msg: impl ToString) -> Resp {
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({ "error": msg.to_string() })),
     )
-}
-
-#[derive(Clone)]
-pub struct AppState {
-    pub tts: Arc<tts::TtsRuntime>,
 }
 
 // ── entry point ──────────────────────────────────────────────────────────────
@@ -258,8 +250,7 @@ fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
 // ── shared server ────────────────────────────────────────────────────────────
 
 async fn run_server(port: u16) -> Result<()> {
-    let tts_runtime = Arc::new(tts::TtsRuntime::bootstrap().await);
-    let app = build_router(AppState { tts: tts_runtime });
+    let app = build_router();
 
     let addr = format!("127.0.0.1:{port}");
     let listener = TcpListener::bind(&addr)
@@ -271,15 +262,13 @@ async fn run_server(port: u16) -> Result<()> {
     Ok(())
 }
 
-pub fn build_router(state: AppState) -> Router {
-    Router::<AppState>::new()
+pub fn build_router() -> Router {
+    Router::new()
         .route("/health", get(health))
         .route("/printers", get(handle_printers))
         .route("/print", post(handle_print_auto)) // auto-detect A4/A5 from PDF metadata
         .route("/print/a4", post(handle_print_a4))
         .route("/print/a5", post(handle_print_a5))
-        .merge(tts::routes())
-        .with_state(state)
 }
 
 /// GET /health
@@ -1237,8 +1226,7 @@ mod tests {
     }
 
     async fn test_app() -> Router {
-        let runtime = Arc::new(tts::TtsRuntime::bootstrap_for_tests().await);
-        build_router(AppState { tts: runtime })
+        build_router()
     }
 
     #[tokio::test]

@@ -23,15 +23,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender   = "0.2.5"
 uuid            = { version = "1.23.1", features = ["v4"] }
 thiserror       = "2.0.18"
-regex           = "1"
-once_cell       = "1"
-memmap2         = "0.9"
-sha2            = "0.11.0"
-num_cpus        = "1"
-hound           = "3.5"
-symphonia       = { version = "0.5", default-features = false, features = ["mp3", "flac", "wav", "pcm"] }
-llama-cpp-2     = "0.1.144"
-ort             = { version = "2.0.0-rc.12", default-features = false, features = ["std", "load-dynamic", "ndarray", "api-24", "tracing"] }
 
 
 [target.'cfg(windows)'.dependencies]

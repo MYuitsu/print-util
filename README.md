@@ -5,20 +5,24 @@ Local HTTP server nhận file PDF qua API và in **ngầm** (silent) — không 
 ## Yêu cầu
 
 - Windows 10/11 (64-bit)
-- Một trong các PDF engine sau (theo thứ tự ưu tiên):
+- Installer đã đóng gói sẵn các PDF engine chính (không cần tải thêm sau khi cài):
   | Engine | Cách cài | Ghi chú |
   |--------|----------|---------|
-  | `gsdll64.dll` | Copy vào cùng thư mục exe | **Khuyến nghị** — in-process, nhanh nhất |
-  | SumatraPDF | [sumatrapdfreader.org](https://www.sumatrapdfreader.org) | Per-user hoặc per-machine |
-  | Ghostscript CLI | [ghostscript.com](https://ghostscript.com/releases/gsdnld.html) | `gswin64c` trên PATH |
-  | Adobe Acrobat / Reader | — | Tự động phát hiện nếu đã cài |
-  | *(fallback)* ShellExecuteW | — | Có thể hiện dialog nếu handler mặc định là Chrome/Edge |
+  | SumatraPDF | Đóng gói trong installer | In im lặng, ưu tiên đầu tiên |
+  | `gsdll64.dll` | Đóng gói trong installer | Fallback in-process |
+  | Ghostscript CLI | Đóng gói trong installer | `gswin64c.exe` và resource đi kèm |
+  | Adobe Acrobat / Reader | Tuỳ chọn, nếu máy đã cài | Tự động phát hiện |
+  | *(fallback)* ShellExecuteW | Có sẵn trên Windows | Có thể hiện dialog |
 
 ## Cài đặt
 
 ### Dùng installer (khuyến nghị)
 
 Tải file `print-util-x.x.x-setup.exe` từ [Releases](../../releases) và chạy.
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate
+by [SignPath Foundation](https://signpath.org/). See the
+[Code signing policy](CODE_SIGNING_POLICY.md).
 
 Installer sẽ:
 - Cài binary vào `%ProgramFiles%\print-util\`
@@ -45,18 +49,13 @@ Yêu cầu: [Inno Setup 6](https://jrsoftware.org/isdl.php)
 ```powershell
 cargo build --release
 iscc installer\setup.iss
-# Output: installer\Output\print-util-0.1.0-setup.exe
+# Output: installer\Output\print-util-0.3.0-setup.exe
 ```
 
-### Bundle Ghostscript DLL (tuỳ chọn, khuyến nghị)
+Ghostscript và SumatraPDF được đóng gói trong installer. Build sẽ báo lỗi nếu thiếu
+engine hoặc resource cần thiết.
 
-```powershell
-# Copy DLL vào thư mục installer\vendor\ trước khi chạy iscc
-New-Item -ItemType Directory -Force installer\vendor
-Copy-Item "C:\Program Files\gs\gs10.04.0\bin\gsdll64.dll" installer\vendor\
-```
-
-> **Lưu ý license:** `gsdll64.dll` là AGPL-3.0. Không commit file này vào repo.
+> **Lưu ý license:** Ghostscript là AGPL-3.0; cần giữ thông tin license khi phân phối.
 
 ### Tray icon VNPT (tuỳ chọn)
 
@@ -65,9 +64,8 @@ hoặc tại `%ProgramFiles%\print-util\vnpt.ico`.
 Nếu không có file này, app sẽ dùng icon mặc định của Windows.
 
 Menu tray:
-- `Download app`: mở trang release
-- `Tai TTS`: tải model TTS vào `%LOCALAPPDATA%\print-util\tts` (không cần quyền admin)
-- `Cau hinh`: mở file `%ProgramData%\print-util\config.json`
+- `Hỗ trợ`: mở trang hỗ trợ GitHub
+- `Cấu hình`: mở file `%ProgramData%\print-util\config.json`
 
 ## Chạy server
 
@@ -233,7 +231,13 @@ Get-Printer | Select-Object Name, Default
 
 Release installers are distributed via **Windows Package Manager (winget)** and validated by Microsoft — no SmartScreen warning for users.
 
-See [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md) for full details.
+See [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md) for signing details and
+[STORE_SUBMISSION.md](STORE_SUBMISSION.md) for the Microsoft Store release checklist.
+
+## Privacy
+
+See the [Privacy Policy](PRIVACY.md). print-util processes print jobs locally and
+does not collect telemetry or send application data to remote services.
 
 ## License
 

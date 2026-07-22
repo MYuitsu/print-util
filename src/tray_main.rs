@@ -24,32 +24,20 @@ mod win_tray {
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
         DispatchMessageW, GetCursorPos, GetMessageW, LoadIconW, MessageBoxW, PostQuitMessage,
         RegisterClassW, SetForegroundWindow, TrackPopupMenu, TranslateMessage, HICON, HMENU,
-        IDC_ARROW, IDI_APPLICATION, IDYES, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE,
-        MB_ICONERROR, MB_ICONINFORMATION, MB_ICONQUESTION, MB_OK, MB_YESNO, MF_SEPARATOR,
+        IDC_ARROW, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE,
+        MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MF_SEPARATOR,
         MF_STRING, MSG, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP,
         WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
         WNDCLASSW, WS_OVERLAPPED, HWND_MESSAGE,
     };
 
     const APP_NAME: &str = "VNPT Print Util";
-    const RELEASES_URL: &str = "https://github.com/MYuitsu/print-util/releases";
-    const TTS_GGUF_URL: &str =
-        "https://huggingface.co/pnnbao-ump/VieNeu-TTS-v2-Turbo-GGUF/resolve/main/vieneu-tts-v2-turbo.gguf";
-    const TTS_DECODER_URL: &str =
-        "https://huggingface.co/pnnbao-ump/VieNeu-Codec/resolve/main/vieneu_decoder_int8.onnx";
-    const TTS_ENCODER_URL: &str =
-        "https://huggingface.co/pnnbao-ump/VieNeu-Codec/resolve/main/vieneu_encoder.onnx";
-    const TTS_VOICES_URL: &str =
-        "https://huggingface.co/pnnbao-ump/VieNeu-TTS-v2-Turbo-GGUF/resolve/main/voices.json";
-    const TTS_G2P_URL: &str =
-        "https://raw.githubusercontent.com/pnnbao97/sea-g2p/main/python/sea_g2p/sea_g2p.bin";
-
+    const SUPPORT_URL: &str = "https://github.com/MYuitsu/print-util/issues";
     const WM_TRAYICON: u32 = WM_APP + 1;
     const TRAY_ICON_ID: u32 = 1;
-    const MENU_DOWNLOAD_APP: u16 = 1001;
-    const MENU_DOWNLOAD_TTS: u16 = 1002;
-    const MENU_CONFIG: u16 = 1003;
-    const MENU_RESTART_SERVICE: u16 = 1004;
+    const MENU_SUPPORT: u16 = 1001;
+    const MENU_CONFIG: u16 = 1002;
+    const MENU_RESTART_SERVICE: u16 = 1003;
     const MENU_EXIT: u16 = 1099;
 
     pub fn run() -> Result<()> {
@@ -131,11 +119,8 @@ mod win_tray {
             WM_COMMAND => {
                 let cmd = loword(wparam.0);
                 match cmd {
-                    MENU_DOWNLOAD_APP => {
-                        let _ = open_url(RELEASES_URL);
-                    }
-                    MENU_DOWNLOAD_TTS => {
-                        start_tts_download_async();
+                    MENU_SUPPORT => {
+                        let _ = open_url(SUPPORT_URL);
                     }
                     MENU_CONFIG => {
                         let _ = open_config_file();
@@ -240,8 +225,7 @@ mod win_tray {
             return;
         };
 
-        let download_app = to_wide(OsStr::new("Tải ứng dụng"));
-        let download_tts = to_wide(OsStr::new("Tải TTS"));
+        let support = to_wide(OsStr::new("Hỗ trợ"));
         let config = to_wide(OsStr::new("Cấu hình"));
         let restart_service = to_wide(OsStr::new("Khởi động lại dịch vụ"));
         let exit_label = to_wide(OsStr::new("Thoát"));
@@ -250,14 +234,8 @@ mod win_tray {
             let _ = AppendMenuW(
                 menu,
                 MF_STRING,
-                MENU_DOWNLOAD_APP as usize,
-                PCWSTR(download_app.as_ptr()),
-            );
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                MENU_DOWNLOAD_TTS as usize,
-                PCWSTR(download_tts.as_ptr()),
+                MENU_SUPPORT as usize,
+                PCWSTR(support.as_ptr()),
             );
             let _ = AppendMenuW(
                 menu,
@@ -297,117 +275,6 @@ mod win_tray {
 
     fn open_url(url: &str) -> Result<()> {
         open_shell_target(url)
-    }
-
-    fn start_tts_download_async() {
-        std::thread::spawn(move || {
-            let result = download_tts_assets();
-            match result {
-                Ok(dir) => {
-                    let should_restart = confirm_yes_no(&format!(
-                        "Tải TTS thành công vào:\n{}\n\nKhởi động lại dịch vụ 'print-util' ngay bây giờ?",
-                        dir.display()
-                    ));
-                    if should_restart {
-                        let _ = restart_service_with_feedback();
-                    } else {
-                        show_info_message("Bạn có thể bấm menu 'Khởi động lại dịch vụ' bất kỳ lúc nào.");
-                    }
-                }
-                Err(e) => {
-                    show_error_message(&format!("Tải TTS thất bại:\n{e:#}"));
-                }
-            }
-        });
-    }
-
-    fn download_tts_assets() -> Result<PathBuf> {
-        let target_dir = tts_target_dir();
-        std::fs::create_dir_all(&target_dir).context("create tts target dir")?;
-
-        download_tts_via_powershell_progress(&target_dir)?;
-        Ok(target_dir)
-    }
-
-    fn tts_target_dir() -> PathBuf {
-        std::env::var("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(r"C:\Users\Default\AppData\Local"))
-            .join("print-util")
-            .join("tts")
-    }
-
-    fn download_tts_via_powershell_progress(target_dir: &PathBuf) -> Result<()> {
-        let log_path = std::env::temp_dir().join("print-util-tts-download.log");
-        let target_q = ps_single_quote(
-            target_dir
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("invalid output path"))?,
-        );
-        let log_q = ps_single_quote(
-            log_path
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("invalid log path"))?,
-        );
-        let gguf = ps_single_quote(TTS_GGUF_URL);
-        let decoder = ps_single_quote(TTS_DECODER_URL);
-        let encoder = ps_single_quote(TTS_ENCODER_URL);
-        let voices = ps_single_quote(TTS_VOICES_URL);
-        let g2p = ps_single_quote(TTS_G2P_URL);
-        let script = format!(
-            "$ErrorActionPreference='Stop';\
-$ProgressPreference='Continue';\
-$log='{log_q}';\
-try{{\
-$target='{target_q}';\
-New-Item -ItemType Directory -Force -Path $target | Out-Null;\
-$assets=@(\
-    @{{u='{gguf}';f='vieneu-tts-v2-turbo.gguf'}},\
-    @{{u='{decoder}';f='vieneu_decoder_int8.onnx'}},\
-    @{{u='{encoder}';f='vieneu_encoder.onnx'}},\
-    @{{u='{voices}';f='voices.base.json'}},\
-    @{{u='{g2p}';f='sea_g2p.bin'}}\
-);\
-for($i=0;$i -lt $assets.Count;$i++){{\
-    $a=$assets[$i];\
-    $pct=[int](($i*100)/$assets.Count);\
-    Write-Progress -Activity 'Đang tải TTS' -Status ('{{0}}/{{1}}: {{2}}' -f ($i+1),$assets.Count,$a.f) -PercentComplete $pct;\
-    Invoke-WebRequest -Uri $a.u -OutFile (Join-Path $target $a.f) -UseBasicParsing -Headers @{{'User-Agent'='print-util-tray'}};\
-}};\
-Write-Progress -Activity 'Đang tải TTS' -Completed;\
-'OK' | Set-Content -Path $log -Encoding UTF8;\
-exit 0;\
-}} catch {{\
-($_ | Out-String) | Set-Content -Path $log -Encoding UTF8;\
-exit 1;\
-}}"
-        );
-
-        let status = Command::new("powershell.exe")
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &script,
-            ])
-            .status()
-            .context("start powershell download")?;
-
-        if !status.success() {
-            let detail = std::fs::read_to_string(&log_path)
-                .unwrap_or_else(|_| String::from("Không đọc được log lỗi PowerShell."));
-            anyhow::bail!(
-                "powershell exited with status {status}.\nChi tiết: {}",
-                detail.trim()
-            );
-        }
-        Ok(())
-    }
-
-    fn ps_single_quote(input: &str) -> String {
-        input.replace('\'', "''")
     }
 
     fn open_config_file() -> Result<()> {
@@ -502,6 +369,10 @@ exit $p.ExitCode"
         Ok(())
     }
 
+    fn ps_single_quote(input: &str) -> String {
+        input.replace('\'', "''")
+    }
+
     fn ensure_config_file() -> Result<PathBuf> {
         let config_dir = std::env::var("ProgramData")
             .map(PathBuf::from)
@@ -511,11 +382,9 @@ exit $p.ExitCode"
 
         let config_path = config_dir.join("config.json");
         if !config_path.exists() {
-            let tts_dir = tts_target_dir();
             let default_cfg = serde_json::json!({
                 "api_base": "http://127.0.0.1:17474",
-                "download_url": RELEASES_URL,
-                "tts_dir": tts_dir.to_string_lossy(),
+                "support_url": SUPPORT_URL,
                 "notes": "Edit values then save."
             });
             let bytes = serde_json::to_vec_pretty(&default_cfg)?;
@@ -552,20 +421,6 @@ exit $p.ExitCode"
                 MB_OK | MB_ICONERROR,
             );
         }
-    }
-
-    fn confirm_yes_no(msg: &str) -> bool {
-        let title = to_wide(OsStr::new(APP_NAME));
-        let text = to_wide(OsStr::new(msg));
-        let result = unsafe {
-            MessageBoxW(
-                HWND::default(),
-                PCWSTR(text.as_ptr()),
-                PCWSTR(title.as_ptr()),
-                MB_YESNO | MB_ICONQUESTION,
-            )
-        };
-        result == IDYES
     }
 
     fn to_wide(s: &OsStr) -> Vec<u16> {
